@@ -1,0 +1,27 @@
+[project]
+name = "workspace-overview"
+version = "0.1.0.dev0"
+description = "Keyboard-first workspace overview for Xfce on X11"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers", "--import-mode=importlib"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]

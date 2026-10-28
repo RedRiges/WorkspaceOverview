@@ -88,6 +88,40 @@ The initial development workflow uses macOS for Core/Mock tests and Void Linux f
 
 Created mainly by LLMs with a sysadmin-level-competency real person supervision. DO NOT USE IN PRODUCTION
 
+## Development setup (macOS)
+
+The repository currently contains development tooling only. Application code,
+the core, and the mock backend have not been implemented yet.
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if needed
+(`brew install uv` on macOS), then run these commands from the repository root:
+
+```sh
+uv sync --locked
+uv run --locked python --version
+```
+
+The `.python-version` file selects Python 3.14 for local development. uv downloads
+a suitable interpreter if needed and creates `.venv` inside the project. It does
+not replace the system Python. The project declares Python 3.12+ compatibility;
+Ruff uses that minimum version when checking syntax and suggesting upgrades.
+
+`pytest` and `ruff` are development dependencies. Their resolved versions are
+recorded in `uv.lock`, which is committed alongside `pyproject.toml`. No GTK or
+X11 dependencies are needed for this setup.
+
+Development commands:
+
+```sh
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked pytest
+```
+
+There are no Python source files or tests yet. pytest currently exits with code 5
+(`no tests collected`). This is expected until actual tests are added; it is not
+a passing test suite.
+
 ## Contributing and releases
 
 The project is being developed in public from the beginning. APIs, interface details, and shortcuts may change before the first release. Issues and constructive feedback are welcome once the repository is ready to accept them.
