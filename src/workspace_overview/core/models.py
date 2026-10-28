@@ -18,6 +18,7 @@ class Window:
     minimized: bool = False
     fullscreen: bool = False
     pinned: bool = False
+    maximized: bool = False
 
 
 @dataclass(frozen=True, slots=True)

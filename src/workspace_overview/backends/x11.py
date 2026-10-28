@@ -90,6 +90,7 @@ class X11Backend:
                     minimized=w.is_minimized(),
                     fullscreen=w.is_fullscreen(),
                     pinned=pinned,
+                    maximized=w.is_maximized(),
                 )
             )
         active = self.screen.get_active_window()

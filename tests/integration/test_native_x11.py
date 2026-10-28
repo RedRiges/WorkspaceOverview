@@ -120,7 +120,12 @@ def test_real_xcomposite_capture(session):
 
 
 def test_real_gtk_overview_excludes_itself_and_activates_card(session):
-    native, _window, _backend, xid = session
+    native, window, backend, xid = session
+    # A maximized application must be discovered and rendered separately from
+    # fullscreen, even though both can fill most or all of the screen.
+    window.maximize()
+    settle(native, lambda: backend.snapshot().window(xid).maximized)
+    assert not backend.snapshot().window(xid).fullscreen
     app = build_application(native)
     assert app.register(None)
     app.activate()

@@ -29,6 +29,7 @@ class NativeWindow:
         self.screen, self.xid, self.space = screen, xid, space
         self.kind, self.pinned = kind, pinned
         self.minimized, self.fullscreen, self.ignore = False, False, False
+        self.maximized = False
 
     def get_xid(self):
         return self.xid
@@ -47,6 +48,9 @@ class NativeWindow:
 
     def is_fullscreen(self):
         return self.fullscreen
+
+    def is_maximized(self):
+        return self.maximized
 
     def get_name(self):
         return "Window"

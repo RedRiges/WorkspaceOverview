@@ -26,6 +26,8 @@ CSS = b"""
                       font-size: 11px; font-weight: bold; }
 .fullscreen-badge { background-color: @theme_selected_bg_color;
                     color: @theme_selected_fg_color; }
+.maximized-badge { background-color: @theme_bg_color; color: @theme_fg_color;
+                   border: 1px solid @theme_selected_bg_color; }
 .minimized-badge { background-color: @theme_bg_color; color: @theme_fg_color;
                    border: 1px solid alpha(@theme_fg_color, 0.45); }
 .overview-title { font-size: 20px; font-weight: bold; }
@@ -295,6 +297,10 @@ def build_application(native, *, previews: bool = True):
             if window.fullscreen:
                 states.append(
                     ("fullscreen-badge", "view-fullscreen-symbolic", "На весь экран")
+                )
+            elif window.maximized:
+                states.append(
+                    ("maximized-badge", "window-maximize-symbolic", "Развёрнуто")
                 )
             if window.minimized:
                 states.append(
