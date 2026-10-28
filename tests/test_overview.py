@@ -393,3 +393,30 @@ def test_window_disappearing_inside_action_is_reported_and_reconciled():
     assert overview.state.error == "Window 101 no longer exists"
     assert overview.state.is_open
     assert not backend.actions
+
+
+def test_pinned_windows_require_explicit_unpinning_before_move(session):
+    backend, overview = session
+    snapshot = backend.snapshot()
+    backend.set_snapshot(
+        replace(
+            snapshot,
+            windows=tuple(
+                replace(w, pinned=True) if w.id == 101 else w for w in snapshot.windows
+            ),
+        )
+    )
+    assert not overview.begin_move()
+    assert overview.state.move is None
+    assert "Unpin" in overview.state.error
+    assert not backend.actions
+
+
+def test_error_survives_passive_ui_refresh_until_user_changes_selection(session):
+    backend, overview = session
+    backend.fail_next("activate", "Focus refused")
+    assert not overview.activate_selected()
+    overview.refresh()
+    assert overview.state.error == "Focus refused"
+    overview.select_window(102)
+    assert overview.state.error is None

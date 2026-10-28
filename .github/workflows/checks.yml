@@ -1,0 +1,31 @@
+name: Checks
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  native-x11:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi python3-xlib python3-pytest \
+            gir1.2-gtk-3.0 gir1.2-wnck-3.0 xvfb openbox xcompmgr dbus-x11
+      - name: Core and adapter tests
+        run: PYTHONPATH=src /usr/bin/python3 -m pytest -q tests
+      - name: Real X11 and GTK integration
+        run: |
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 +extension Composite' sh -eu -c '
+            openbox >/tmp/workspace-overview-wm.log 2>&1 &
+            wm_pid=$!
+            xcompmgr >/tmp/workspace-overview-compositor.log 2>&1 &
+            compositor_pid=$!
+            trap "kill $wm_pid $compositor_pid 2>/dev/null || true" EXIT
+            sleep 2
+            PYTHONPATH=src WORKSPACE_OVERVIEW_NATIVE_TESTS=1 /usr/bin/python3 -m pytest -q tests/integration
+          '

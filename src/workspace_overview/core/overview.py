@@ -112,16 +112,20 @@ class Overview:
         if not any(w.id == window_id for w in snapshot.windows_on(workspace_id)):
             window_id = self._initial_window(snapshot, workspace_id)
         move = self.state.move
-        error = None
+        error = self.state.error
         if move is not None:
+            move_error = None
             source = snapshot.window(move.window_id)
             if source is None:
-                error = "The window being moved no longer exists"
+                move_error = "The window being moved no longer exists"
             elif source.workspace_id != move.source_workspace_id:
-                error = "The window was moved externally; select a destination again"
+                move_error = (
+                    "The window was moved externally; select a destination again"
+                )
             elif move.destination_workspace_id not in workspace_ids:
-                error = "The destination workspace no longer exists"
-            if error:
+                move_error = "The destination workspace no longer exists"
+            if move_error:
+                error = move_error
                 move = None
         self._state = replace(
             self.state,
@@ -207,6 +211,10 @@ class Overview:
         window = self.state.snapshot.window(window_id)
         if window is None:
             return self._error("The selected window no longer exists")
+        if window.pinned:
+            return self._error(
+                "Unpin this window in the window manager before moving it"
+            )
         self._state = replace(
             self.state,
             selected_workspace_id=window.workspace_id,
@@ -245,7 +253,7 @@ class Overview:
         except BackendError as exc:
             return self._action_failed(str(exc))
         # The move is no longer pending; don't treat our own change as external.
-        self._state = replace(self.state, move=None)
+        self._state = replace(self.state, move=None, error=None)
         if not self.refresh():
             return False
         window = self.state.snapshot.window(move.window_id)

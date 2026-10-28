@@ -9,6 +9,7 @@ license-files = ["LICENSE"]
 dependencies = []
 
 [project.scripts]
+workspace-overview = "workspace_overview.__main__:main"
 workspace-overview-demo = "workspace_overview.demo:main"
 
 [build-system]

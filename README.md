@@ -4,7 +4,7 @@ lightweight, keyboard-first workspace overview for Xfce on X11
 
 Workspace Overview aims to make it easy to find, activate, and move windows across workspaces—including windows hidden behind fullscreen applications. Inspired by the overview experience of macOS Mission Control, it is designed to fit naturally into Xfce rather than replace its window manager
 
-> **Status: core and mock backend implemented; GTK/X11 integration planned**
+> **Status: early native GTK3/X11 implementation, ready for integration testing**
 
 ## Target platform
 
@@ -28,7 +28,7 @@ Support for other X11 desktops or distributions may be considered later; it is n
 
 **Nested X servers:** A Xephyr session is treated as one window of the main X11 session. The overview does not inspect or control windows inside Xephyr, including applications managed by a nested window manager such as IceWM.
 
-## Keyboard and mouse controls (planned)
+## Keyboard and mouse controls
 
 | Input | Action |
 | --- | --- |
@@ -88,10 +88,87 @@ The initial development workflow uses macOS for Core/Mock tests and Void Linux f
 
 Created mainly by LLMs with a sysadmin-level-competency real person supervision. DO NOT USE IN PRODUCTION
 
+## Run on Void Linux / Xfce (real windows)
+
+Run from a terminal inside your normal Xfce **X11** session, as your desktop user.
+The native entry point always uses real windows; it never substitutes mock data.
+
+Install the distribution packages:
+
+```sh
+sudo xbps-install -S python3 python3-gobject gtk+3 libwnck python3-xlib
+```
+
+From an existing checkout:
+
+```sh
+git pull --ff-only
+./scripts/run-x11 --check
+./scripts/run-x11
+```
+
+For a new checkout, first run
+`git clone https://github.com/RedRiges/WorkspaceOverview.git` and
+`cd WorkspaceOverview`. GitHub login is not required for this public repository.
+
+`scripts/run-x11` uses `/usr/bin/python3` and the source in this checkout. This
+keeps the interpreter compatible with Void's compiled PyGObject bindings. The
+development `.venv` created by uv may use a different Python and cannot normally
+import those bindings; use the script for native testing. No global pip install
+or GTK compilation is needed. Updating the checkout updates the native app.
+
+`--check` reports dependency/display errors, window-manager name, workspace and
+window counts, compositor state, and preview availability. It does not activate
+or move anything, and does not print window titles. Launching without `--check`
+opens the fullscreen overview. Use `./scripts/run-x11 --no-previews` to diagnose
+the window controls separately from XComposite capture.
+
+For `Super+Tab`, copy the absolute path printed by `realpath scripts/run-x11`
+into **Xfce Settings → Keyboard → Application Shortcuts**, and assign the shortcut
+manually. Repeating the launch command toggles an existing overview through the
+session D-Bus. The process exits when the overview closes; no daemon is installed.
+
+### First real-session checks
+
+1. Open two applications on different workspaces; minimize one window and make
+   another fullscreen. Launch the overview and check that both appear.
+2. Use Tab / Shift+Tab and arrows. Only selection should change.
+3. Press Enter or click a card. The chosen window should receive focus; a
+   minimized window should be restored and its workspace activated.
+4. Reopen, select a window, press F2, select a destination with arrows, and press
+   Enter. The window should move while the active workspace stays unchanged and
+   the overview remains open. Esc cancels an unconfirmed move.
+5. Open or close another application while the overview is visible. The cards
+   should update without selecting or acting on a different window accidentally.
+
+Window actions wait up to 1.5 seconds per request for confirmation by the window
+manager. Errors are displayed in the overview. The application does not change
+Xfce settings, window geometry, the compositor configuration, or workspace count.
+
+Pinned windows are shown on the current active workspace with an **all
+workspaces** label. They can be activated; moving them requires unpinning through
+the window manager first. Normal and dialog windows are included; panels, desktop
+windows, tooltips, and the overview itself are excluded.
+
+Previews use existing XComposite pixmaps, including window-manager frames when
+applicable. The app does not redirect windows itself or capture the desktop behind
+them. Minimized, unredirected fullscreen, or otherwise unavailable images fall
+back to the real application icon and title. Thumbnails stay in memory. Preview
+availability must be checked on the actual Xfwm4/XLibre setup.
+
+This version supports one monitor and X11 only. It uses an opaque, theme-colored
+background. Automated Linux integration tests use Xvfb, Openbox and xcompmgr;
+they do not establish compatibility with every Xfwm4/XLibre configuration.
+
+Package/API references: [Void PyGObject](https://github.com/void-linux/void-packages/blob/master/srcpkgs/python3-gobject/template),
+[Void libwnck](https://github.com/void-linux/void-packages/blob/master/srcpkgs/libwnck/template),
+[GTK3](https://docs.gtk.org/gtk3/), and
+[python-xlib XComposite](https://github.com/python-xlib/python-xlib/blob/master/Xlib/ext/composite.py).
+
 ## Development setup (macOS)
 
-The platform-independent core and in-memory mock backend run on macOS. The GTK
-interface and real X11 backend are not implemented yet.
+The platform-independent core and in-memory mock backend run on macOS. Native
+GTK/X11 testing uses Linux; macOS checks do not exercise a real window manager.
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if needed
 (`brew install uv` on macOS), then run these commands from the repository root:
@@ -139,6 +216,9 @@ The package lives in `src/workspace_overview`:
 | `core/navigation.py` | Arrow navigation through a row-major grid |
 | `core/overview.py` | Selection, opening/closing, move confirmation, and state reconciliation |
 | `backends/mock.py` | In-memory session, generated previews, and simulated failures |
+| `backends/x11.py` | libwnck discovery, activation, workspace moves, and bounded confirmation |
+| `previews/` | XComposite capture and TrueColor-to-RGB thumbnail conversion |
+| `ui/gtk.py` | Fullscreen GTK3 cards, keyboard/mouse controls, and session refresh |
 
 The core has no runtime dependencies outside the Python standard library. For
 example, from `uv run python`:
@@ -183,17 +263,24 @@ Previews are captured once per opening and once for newly discovered windows.
 The mock generates small RGB checkerboards in memory. Closing clears the preview
 cache; no titles or images are saved to disk by the core or backend.
 
-The backend contract is currently synchronous. The core verifies action results
-using a fresh snapshot, including rejection of silent no-ops. Real X11 requests
-will need bounded completion handling in their adapter or a future pending-action
-API. Sticky windows, UI layout/rendering, event subscriptions, native image
-capture, and real X11 operations are not implemented by this milestone.
+The backend contract is synchronous. The core verifies action results using a
+fresh snapshot, including rejection of silent no-ops. The X11 adapter pumps the
+GLib event loop while awaiting confirmation, with a bounded timeout; UI actions
+are guarded against reentrancy. The overview refreshes its snapshot every 300 ms.
+Existing thumbnails stay static for the current opening.
+
+The default test suite skips `tests/integration`. CI additionally enables those
+tests on a disposable Xvfb display with a real window manager and compositor;
+the tests create their own GTK windows and exercise native capture and actions.
+Do not enable `WORKSPACE_OVERVIEW_NATIVE_TESTS=1` on your everyday desktop.
 
 ## Contributing and releases
 
 The project is being developed in public from the beginning. APIs, interface details, and shortcuts may change before the first release. Issues and constructive feedback are welcome once the repository is ready to accept them.
 
-No installation instructions are published yet because there is no usable release. Contribution guidelines will be added before accepting outside code contributions.
+The checkout can be run for integration testing as described above; there is no
+stable release yet. Contribution guidelines will be added before accepting
+outside code contributions.
 
 ## License
 

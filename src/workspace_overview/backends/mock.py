@@ -107,7 +107,10 @@ class MockBackend:
 
     def move_window(self, window_id: int, workspace_id: int) -> None:
         self._check_failure("move")
-        self._window(window_id)
+        if self._window(window_id).pinned:
+            raise BackendError(
+                "Unpin this window in the window manager before moving it"
+            )
         if not any(w.id == workspace_id for w in self._snapshot.workspaces):
             raise BackendError(f"Workspace {workspace_id} no longer exists")
         active = self._snapshot.active_window_id

@@ -1,4 +1,4 @@
-"""Contract implemented by in-memory and future X11 adapters."""
+"""Contract implemented by in-memory and X11 adapters."""
 
 from typing import Protocol
 
@@ -13,8 +13,7 @@ class Backend(Protocol):
     """Synchronous boundary; all operations are called on the owning thread.
 
     Mutating methods return once the adapter can provide a refreshed snapshot.
-    A future asynchronous X11 adapter must settle its requests with a bounded
-    timeout before returning, or expose a separate pending-operation API.
+    The X11 adapter settles requests with a bounded timeout before returning.
     Expected failures raise BackendError; they never imply confirmed success.
     """
 

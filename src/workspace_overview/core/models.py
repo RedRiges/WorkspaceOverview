@@ -17,6 +17,7 @@ class Window:
     icon_name: str = "application-x-executable"
     minimized: bool = False
     fullscreen: bool = False
+    pinned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
