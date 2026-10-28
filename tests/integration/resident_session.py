@@ -5,6 +5,7 @@ lock the host screen. Only this driver's own fixture windows are manipulated.
 """
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -171,6 +172,21 @@ def main():
         assert primary.returncode == 0, out + err
         assert "Traceback" not in err, err
         assert "not running" in command("--status")
+        assert not has_owner("io.github.redriges.WorkspaceOverview")
+        # A terminal interrupt must stop the resident, not leave a hidden process.
+        primary = subprocess.Popen(
+            [sys.executable, "-m", "workspace_overview", "--background"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        settle(lambda: has_owner("io.github.redriges.WorkspaceOverview"))
+        settle(lambda: expected in command("--status"))
+        primary.send_signal(signal.SIGINT)
+        settle(lambda: primary.poll() is not None)
+        out, err = primary.communicate()
+        assert primary.returncode == 0, out + err
+        assert "Traceback" not in err, err
         assert not has_owner("io.github.redriges.WorkspaceOverview")
         print(
             "Resident lifecycle, cache retention, lock/owner loss "

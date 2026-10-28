@@ -212,7 +212,8 @@ for this implementation. D-Bus command output requires GLib 2.80 or newer.
 
 Stop with `--quit` **before updating or switching branches**, since an already
 running Python process continues using its loaded code. `master` keeps the
-non-resident version until this experiment is accepted.
+non-resident version until this experiment is accepted. Ctrl+C in the launching
+terminal or SIGTERM also shuts down the resident and releases its cache.
 
 ### First real-session checks
 

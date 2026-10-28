@@ -1,5 +1,6 @@
 """Native GTK3 overview using the real X11 backend."""
 
+import signal
 import sys
 
 from workspace_overview.backends.x11 import create_backend
@@ -74,6 +75,7 @@ def build_application(native, *, previews: bool = True):
             self._render_pending = False
             self._stop_requested = False
             self._capture_error = False
+            self._signal_sources = {}
             self.exit_status = 0
 
         def do_command_line(self, command):
@@ -122,6 +124,15 @@ def build_application(native, *, previews: bool = True):
             self.hold()
             self._held = True
             self._background_timer = GLib.timeout_add(750, self._sample_background)
+            for number in (signal.SIGINT, signal.SIGTERM):
+                self._signal_sources[number] = GLib.unix_signal_add(
+                    GLib.PRIORITY_DEFAULT, number, self._signal_stop, number
+                )
+
+        def _signal_stop(self, number):
+            self._signal_sources.pop(number, None)
+            self.stop()
+            return False
 
         def _capture_permitted(self):
             return (
@@ -688,6 +699,9 @@ def build_application(native, *, previews: bool = True):
             self.quit()
 
         def _dispose_resident(self):
+            for source in self._signal_sources.values():
+                GLib.source_remove(source)
+            self._signal_sources.clear()
             if self._background_timer:
                 GLib.source_remove(self._background_timer)
                 self._background_timer = 0
