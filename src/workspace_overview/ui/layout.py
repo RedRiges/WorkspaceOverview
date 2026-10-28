@@ -1,4 +1,4 @@
-"""Shared dimensions for the experimental single-row workspace strip."""
+"""Shared dimensions for the single-row workspace strip."""
 
 
 def strip_dimensions(width: int, workspace_count: int) -> tuple[int, int, int]:

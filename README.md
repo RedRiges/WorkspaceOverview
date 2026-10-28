@@ -2,22 +2,24 @@
 
 lightweight, keyboard-first workspace overview for Xfce on X11
 
-**Experimental branch: `experiment/workspace-strip`.** Workspaces form one
-horizontal row. The row fits the screen when space permits; with more workspaces
+**The default layout on `master` is a single horizontal row.** The row fits the
+screen when space permits; with more workspaces
 it scrolls horizontally and reveals the selected workspace or move destination.
 Cards keep a readable minimum size, and windows within each workspace can still
-occupy several rows. The regular grid remains on `master`.
+occupy several rows. The previous workspace grid is preserved on
+`layout/workspace-grid`.
 
-To try this branch after closing the overview:
+To use the default layout after closing the overview:
 
 ```bash
 git fetch origin
-git switch experiment/workspace-strip
+git switch master
 git pull --ff-only
 ./scripts/run-x11
 ```
 
-Return to the regular layout with `git switch master` and relaunch the overview.
+To try the previous grid, run `git switch layout/workspace-grid` and relaunch the
+overview. Switch back with `git switch master`.
 
 Workspace Overview aims to make it easy to find, activate, and move windows across workspaces—including windows hidden behind fullscreen applications. Inspired by the overview experience of macOS Mission Control, it is designed to fit naturally into Xfce rather than replace its window manager
 
