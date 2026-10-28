@@ -6,7 +6,7 @@ from workspace_overview.backends.x11 import create_backend
 from workspace_overview.core.backend import BackendError
 from workspace_overview.core.navigation import Direction
 from workspace_overview.core.overview import Overview
-from workspace_overview.ui.layout import grid_columns
+from workspace_overview.ui.layout import strip_dimensions
 
 CSS = b"""
 #workspace-overview { background-image: none; background-color: @theme_bg_color; }
@@ -52,6 +52,9 @@ def build_application(native, *, previews: bool = True):
             self._compositor_handler = 0
             self._css = None
             self._has_rgba_visual = False
+            self._selected_panel = None
+            self._reveal_pending = False
+            self._reveal_source = 0
             self.exit_status = 0
 
         def do_activate(self):
@@ -138,10 +141,14 @@ def build_application(native, *, previews: bool = True):
             header.pack_start(close, False, False, 0)
             root.pack_start(header, False, False, 0)
             self.scroller = Gtk.ScrolledWindow()
-            self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            self.scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            self.scroller.set_overlay_scrolling(False)
             self.grid = Gtk.Grid(column_spacing=12, row_spacing=12)
             self.grid.set_direction(Gtk.TextDirection.LTR)
             self.grid.set_column_homogeneous(True)
+            self.grid.set_valign(Gtk.Align.CENTER)
+            self.grid.connect("size-allocate", self._queue_reveal)
+            self.scroller.get_hadjustment().connect("changed", self._queue_reveal)
             self.scroller.add(self.grid)
             root.pack_start(self.scroller, True, True, 0)
             self.status = Gtk.Label(xalign=0)
@@ -172,9 +179,10 @@ def build_application(native, *, previews: bool = True):
         def _render(self):
             state = self.overview.state
             width = native.display.get_monitor(0).get_geometry().width
-            self.workspace_columns, self.card_columns = grid_columns(
+            self.workspace_columns, self.card_columns, panel_width = strip_dimensions(
                 width, len(state.snapshot.workspaces)
             )
+            self._selected_panel = None
             for child in self.grid.get_children():
                 child.destroy()
             selected_widget = None
@@ -182,6 +190,7 @@ def build_application(native, *, previews: bool = True):
                 panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
                 panel.set_valign(Gtk.Align.START)
                 panel.set_hexpand(True)
+                panel.set_size_request(panel_width, -1)
                 style = panel.get_style_context()
                 style.add_class("workspace")
                 if workspace.id == state.selected_workspace_id:
@@ -191,14 +200,19 @@ def build_application(native, *, previews: bool = True):
                 name = workspace.name
                 if workspace.id == state.snapshot.active_workspace_id:
                     name += "  • active"
-                header = Gtk.Button(label=name)
+                header = Gtk.Button(label=f"{index + 1} · {name}")
+                header.get_child().set_ellipsize(native.Pango.EllipsizeMode.END)
+                header.get_child().set_max_width_chars(22)
+                header.set_tooltip_text(name)
                 header.connect("clicked", self._workspace_clicked, workspace.id)
                 panel.pack_start(header, False, False, 0)
                 if state.move and workspace.id == state.move.destination_workspace_id:
                     selected_widget = header
+                    self._selected_panel = panel
                 elif not state.move and workspace.id == state.selected_workspace_id:
                     # Empty workspaces need a focus/scroll target, too.
                     selected_widget = header
+                    self._selected_panel = panel
                 cards = Gtk.Grid(column_spacing=8, row_spacing=8)
                 cards.set_direction(Gtk.TextDirection.LTR)
                 cards.set_column_homogeneous(True)
@@ -221,8 +235,8 @@ def build_application(native, *, previews: bool = True):
                             selected_widget = card
                 self.grid.attach(
                     panel,
-                    index % self.workspace_columns,
-                    index // self.workspace_columns,
+                    index,
+                    0,
                     1,
                     1,
                 )
@@ -249,9 +263,43 @@ def build_application(native, *, previews: bool = True):
                     f"{len(state.snapshot.workspaces)} workspaces"
                 )
             self.status.set_text(message)
+            self._reveal_pending = True
             self.grid.show_all()
             if selected_widget is not None:
                 selected_widget.grab_focus()
+            self._queue_reveal()
+
+        def _queue_reveal(self, *_args):
+            if self._reveal_pending and not self._reveal_source:
+                # Wait until GTK has allocated the new cards and scroll range.
+                self._reveal_source = GLib.idle_add(self._reveal_selection)
+
+        def _reveal_selection(self):
+            self._reveal_source = 0
+            panel = self._selected_panel
+            if self.window is None or panel is None:
+                return False
+            adjustment = self.scroller.get_hadjustment()
+            position = panel.translate_coordinates(self.grid, 0, 0)
+            if (
+                position is None
+                or adjustment.get_page_size() <= 1
+                or panel.get_allocated_width() <= 1
+            ):
+                return False  # A later size allocation will queue another attempt.
+            self._reveal_pending = False
+            center = position[0] + panel.get_allocated_width() / 2
+            maximum = max(
+                adjustment.get_lower(),
+                adjustment.get_upper() - adjustment.get_page_size(),
+            )
+            adjustment.set_value(
+                max(
+                    adjustment.get_lower(),
+                    min(maximum, center - adjustment.get_page_size() / 2),
+                )
+            )
+            return False
 
         def _card(self, window):
             card = Gtk.Button()
@@ -461,6 +509,11 @@ def build_application(native, *, previews: bool = True):
                 self.window.destroy()
 
         def _destroyed(self, *_args):
+            self._reveal_pending = False
+            self._selected_panel = None
+            if self._reveal_source:
+                GLib.source_remove(self._reveal_source)
+                self._reveal_source = 0
             if self._compositor_handler:
                 self._screen.disconnect(self._compositor_handler)
                 self._compositor_handler = 0

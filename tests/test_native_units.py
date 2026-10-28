@@ -6,7 +6,7 @@ from workspace_overview.__main__ import main
 from workspace_overview.core.backend import BackendError
 from workspace_overview.native import check_session
 from workspace_overview.previews.pixels import decode_rgb
-from workspace_overview.ui.layout import grid_columns
+from workspace_overview.ui.layout import strip_dimensions
 
 
 @pytest.mark.parametrize(
@@ -35,14 +35,15 @@ def test_native_command_never_falls_back_to_mock(monkeypatch, capsys):
 @pytest.mark.parametrize(
     "width,count,expected",
     [
-        (1366, 4, (2, 2)),
-        (1920, 4, (3, 2)),
-        (800, 1, (1, 3)),
-        (200, 0, (1, 1)),
+        (1366, 4, (4, 1, 316)),
+        (1920, 4, (4, 1, 455)),
+        (800, 1, (1, 3, 736)),
+        (200, 0, (1, 1, 264)),
+        (1280, 8, (8, 1, 264)),
     ],
 )
 def test_rendering_and_navigation_use_identical_grid(width, count, expected):
-    assert grid_columns(width, count) == expected
+    assert strip_dimensions(width, count) == expected
 
 
 @pytest.mark.parametrize("byteorder", ["little", "big"])

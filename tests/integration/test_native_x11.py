@@ -126,6 +126,7 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
     window.maximize()
     settle(native, lambda: backend.snapshot().window(xid).maximized)
     assert not backend.snapshot().window(xid).fullscreen
+    original_workspace_count = len(backend.snapshot().workspaces)
     app = build_application(native)
     assert app.register(None)
     app.activate()
@@ -147,9 +148,44 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
                 and app.backend.screen.get_active_window().get_xid() == own_xid
             ),
         )
+        # Four workspaces fit on this 1280px display in one row. Increasing to
+        # eight must overflow horizontally and keep the selected destination visible.
+        assert all(
+            app.grid.child_get_property(panel, "top-attach") == 0
+            for panel in app.grid.get_children()
+        )
+        horizontal = app.scroller.get_hadjustment()
+        if original_workspace_count == 4:
+            settle(
+                native,
+                lambda: horizontal.get_upper() <= horizontal.get_page_size() + 1,
+            )
+        backend.screen.change_workspace_count(8)
+        settle(native, lambda: len(app.overview.state.snapshot.workspaces) == 8)
         order = [w.id for w in app.overview.state.snapshot.workspaces]
+
+        def selection_visible():
+            panel = app._selected_panel
+            if panel is None or panel.get_allocated_width() <= 1:
+                return False
+            position = panel.translate_coordinates(app.grid, 0, 0)
+            if position is None:
+                return False
+            start = position[0] - horizontal.get_value()
+            end = start + panel.get_allocated_width()
+            return start >= -1 and end <= horizontal.get_page_size() + 1
+
+        app.overview.select_workspace(order[-1])
+        app._render()
+        settle(native, selection_visible)
+        assert horizontal.get_value() > 0
+        assert all(
+            app.grid.child_get_property(panel, "top-attach") == 0
+            for panel in app.grid.get_children()
+        )
         app.overview.select_workspace(order[0])
         app._render()
+        settle(native, selection_visible)
         press_key(native, "Tab")
         settle(native, lambda: app.overview.state.selected_workspace_id == order[1])
         press_key(native, "Tab", shift=True)
@@ -160,6 +196,13 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
         press_key(native, "Left")
         settle(native, lambda: app.overview.state.selected_workspace_id == order[0])
         assert app.overview.state.snapshot.active_workspace_id == order[0]
+        # Move mode must reveal its destination, even while the source stays selected.
+        press_key(native, "F2")
+        app._perform(lambda: app.overview.select_destination(order[-1]))
+        settle(native, selection_visible)
+        assert horizontal.get_value() > 0
+        press_key(native, "Escape")
+        settle(native, selection_visible)
         assert app.overview.select_window(xid)
         event = native.Gdk.Event.new(native.Gdk.EventType.KEY_PRESS)
         event.keyval = native.Gdk.KEY_Return
@@ -170,3 +213,8 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
     finally:
         if app.window is not None:
             app.window.destroy()
+        backend.screen.change_workspace_count(original_workspace_count)
+        settle(
+            native,
+            lambda: len(backend.snapshot().workspaces) == original_workspace_count,
+        )

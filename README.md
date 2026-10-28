@@ -2,6 +2,23 @@
 
 lightweight, keyboard-first workspace overview for Xfce on X11
 
+**Experimental branch: `experiment/workspace-strip`.** Workspaces form one
+horizontal row. The row fits the screen when space permits; with more workspaces
+it scrolls horizontally and reveals the selected workspace or move destination.
+Cards keep a readable minimum size, and windows within each workspace can still
+occupy several rows. The regular grid remains on `master`.
+
+To try this branch after closing the overview:
+
+```bash
+git fetch origin
+git switch experiment/workspace-strip
+git pull --ff-only
+./scripts/run-x11
+```
+
+Return to the regular layout with `git switch master` and relaunch the overview.
+
 Workspace Overview aims to make it easy to find, activate, and move windows across workspaces—including windows hidden behind fullscreen applications. Inspired by the overview experience of macOS Mission Control, it is designed to fit naturally into Xfce rather than replace its window manager
 
 > **Status: early native GTK3/X11 implementation, ready for integration testing**
@@ -19,7 +36,7 @@ Support for other X11 desktops or distributions may be considered later; it is n
 
 - List all workspaces managed by Xfwm4
 - Discover normal application windows, including minimized, obscured, and fullscreen windows
-- Display workspaces in a grid, with non-overlapping cards for their windows
+- Display workspaces in one horizontal row, with non-overlapping window cards
 - Capture a **static preview** of each available window when the overview opens
 - Activate a selected window using the keyboard or mouse
 - Move windows between workspaces using keyboard-first controls
@@ -43,9 +60,11 @@ Support for other X11 desktops or distributions may be considered later; it is n
 
 Moving a window **does not automatically switch the active workspace**. The overview remains open after a move. Navigation alone never activates or moves a window.
 
-Workspaces follow their Xfce number, from left to right and then top to bottom.
+Workspaces follow their Xfce number in one row, from left to right.
 Tab moves forward through that order and wraps; Shift+Tab moves backward. Arrows
-follow the visible grid, including empty workspaces, and stop at its outer edges.
+follow the visible cards and cross left/right into neighboring workspaces,
+including empty ones. They stop at the row's outer edges. When the row overflows,
+selection scrolls its workspace toward the center, limited by the strip's ends.
 
 The global `Super + Tab` shortcut will be configured through Xfce rather than by installing a system-wide keyboard hook.
 
@@ -53,7 +72,7 @@ The global `Super + Tab` shortcut will be configured through Xfce rather than by
 
 A midpoint between **macOS Mission Control** and a **native Xfce dashboard**:
 
-- A fullscreen grid of workspaces with consistent, non-overlapping window cards
+- A fullscreen workspace strip with consistent, non-overlapping window cards
 - Static previews preserving the content's aspect ratio
 - GTK3 widgets, system fonts, icons, and theme colors wherever practical
 - Clear, separate visual states for the active workspace and keyboard-selected window
@@ -68,7 +87,7 @@ A midpoint between **macOS Mission Control** and a **native Xfce dashboard**:
 | **Mock backend** | Synthetic workspaces, windows, and images for development and tests |
 | **X11 backend** | Window discovery, activation, workspace changes, and notifications via libwnck/X11 |
 | **Preview backend** | One-shot window-image capture using XComposite; graceful fallback |
-| **GTK3 UI** | Workspace grid, cards, focus indicators, input handling, and theme integration |
+| **GTK3 UI** | Workspace strip, cards, focus indicators, input handling, and theme integration |
 
 **Language and dependencies:** Python (3.14 on the target Void system; keep the platform-independent core compatible with Python 3.12+), GTK3/PyGObject, libwnck, and XComposite. The project uses **uv** for Python project management. Native GTK/libwnck components are installed through the system package manager; they are not vendored into the uv environment.
 

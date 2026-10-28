@@ -1,8 +1,14 @@
-"""Shared grid dimensions used for rendering and keyboard navigation."""
+"""Shared dimensions for the experimental single-row workspace strip."""
 
 
-def grid_columns(width: int, workspace_count: int) -> tuple[int, int]:
-    workspaces = max(1, min(workspace_count, 3, max(1, width - 32) // 480))
-    panel_width = max(1, width - 32) // workspaces
+def strip_dimensions(width: int, workspace_count: int) -> tuple[int, int, int]:
+    """Return workspace columns, card columns and minimum panel width.
+
+    Fit the complete row when possible, reserving outer padding, gaps and room
+    for a vertical scrollbar. Overflow horizontally instead of shrinking cards
+    below a readable size or wrapping workspaces into another row.
+    """
+    workspaces = max(1, workspace_count)
+    panel_width = max(264, (width - 64 - 12 * (workspaces - 1)) // workspaces)
     cards = max(1, min(3, (panel_width - 48) // 224))
-    return workspaces, cards
+    return workspaces, cards, panel_width
