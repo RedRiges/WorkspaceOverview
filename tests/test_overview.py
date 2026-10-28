@@ -420,3 +420,51 @@ def test_error_survives_passive_ui_refresh_until_user_changes_selection(session)
     assert overview.state.error == "Focus refused"
     overview.select_window(102)
     assert overview.state.error is None
+
+
+def test_arrows_cross_workspace_edges_without_activating_or_moving(session):
+    backend, overview = session
+    before = backend.snapshot()
+    # First right stays among the cards; the next enters the adjacent workspace.
+    overview.navigate(Direction.RIGHT, columns=2, workspace_columns=2)
+    assert overview.state.selected_window_id == 102
+    overview.navigate(Direction.RIGHT, columns=2, workspace_columns=2)
+    assert overview.state.selected_workspace_id == 20
+    assert overview.state.selected_window_id == 201
+    overview.navigate(Direction.LEFT, columns=2, workspace_columns=2)
+    assert overview.state.selected_workspace_id == 10
+    assert overview.state.selected_window_id == 102
+    assert backend.snapshot() == before
+    assert not backend.actions
+
+
+def test_arrows_enter_and_leave_empty_workspaces(session):
+    backend, overview = session
+    overview.navigate(Direction.DOWN, columns=2, workspace_columns=2)
+    assert overview.state.selected_workspace_id == 30
+    assert overview.state.selected_window_id is None
+    assert not overview.navigate(Direction.DOWN, columns=2, workspace_columns=2)
+    overview.navigate(Direction.UP, columns=2, workspace_columns=2)
+    assert overview.state.selected_workspace_id == 10
+    assert overview.state.selected_window_id == 101
+    assert not backend.actions
+
+
+def test_move_arrows_use_workspace_columns_not_card_columns(session):
+    _, overview = session
+    overview.begin_move()
+    overview.navigate(Direction.DOWN, columns=1, workspace_columns=2)
+    assert overview.state.move.destination_workspace_id == 30
+    assert overview.state.selected_workspace_id == 10
+
+
+def test_tab_direction_follows_display_order_with_wrap(session):
+    backend, overview = session
+    order = [w.id for w in overview.state.snapshot.workspaces]
+    for expected in (order[1], order[2], order[0]):
+        overview.cycle_workspace(1)
+        assert overview.state.selected_workspace_id == expected
+    for expected in (order[2], order[1], order[0]):
+        overview.cycle_workspace(-1)
+        assert overview.state.selected_workspace_id == expected
+    assert not backend.actions

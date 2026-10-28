@@ -3,7 +3,7 @@
 import pytest
 
 from workspace_overview.core.models import Preview, Snapshot, Window, Workspace
-from workspace_overview.core.navigation import Direction, grid_neighbor
+from workspace_overview.core.navigation import Direction, grid_entry, grid_neighbor
 
 
 @pytest.mark.parametrize(
@@ -64,3 +64,19 @@ def test_grid_edges_and_incomplete_rows(index, direction, expected):
 def test_invalid_grid_input_is_rejected(index, count, columns):
     with pytest.raises(ValueError):
         grid_neighbor(index, count, columns, Direction.DOWN)
+
+
+@pytest.mark.parametrize(
+    "source,count,direction,expected",
+    [
+        (4, 5, Direction.RIGHT, 3),
+        (3, 5, Direction.LEFT, 4),
+        (4, 5, Direction.DOWN, 1),
+        (2, 5, Direction.UP, 4),
+        (8, 2, Direction.RIGHT, 0),
+        (8, 2, Direction.LEFT, 1),
+        (8, 2, Direction.DOWN, 1),
+    ],
+)
+def test_enter_adjacent_workspace_from_near_edge(source, count, direction, expected):
+    assert grid_entry(source, count, 3, direction) == expected

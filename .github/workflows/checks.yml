@@ -8,6 +8,10 @@ permissions:
 jobs:
   native-x11:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compositor: [true, false]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -19,12 +23,17 @@ jobs:
       - name: Core and adapter tests
         run: PYTHONPATH=src /usr/bin/python3 -m pytest -q tests
       - name: Real X11 and GTK integration
+        env:
+          WORKSPACE_OVERVIEW_TEST_COMPOSITOR: ${{ matrix.compositor }}
         run: |
           dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 +extension Composite' sh -eu -c '
             openbox >/tmp/workspace-overview-wm.log 2>&1 &
             wm_pid=$!
-            xcompmgr >/tmp/workspace-overview-compositor.log 2>&1 &
-            compositor_pid=$!
+            compositor_pid=""
+            if [ "$WORKSPACE_OVERVIEW_TEST_COMPOSITOR" = "true" ]; then
+              xcompmgr >/tmp/workspace-overview-compositor.log 2>&1 &
+              compositor_pid=$!
+            fi
             trap "kill $wm_pid $compositor_pid 2>/dev/null || true" EXIT
             sleep 2
             PYTHONPATH=src WORKSPACE_OVERVIEW_NATIVE_TESTS=1 /usr/bin/python3 -m pytest -q tests/integration

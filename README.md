@@ -34,7 +34,7 @@ Support for other X11 desktops or distributions may be considered later; it is n
 | --- | --- |
 | `Super + Tab` | Open or close the overview |
 | `Tab` / `Shift + Tab` | Select the next or previous workspace |
-| Arrow keys | Select a window in the current workspace |
+| Arrow keys | Select a window; at the card-grid edge, select the neighboring workspace |
 | `Enter` | Activate the selected window |
 | `F2` | Enter window-move mode |
 | Arrow keys, then `Enter` | Select the destination workspace and confirm the move |
@@ -42,6 +42,10 @@ Support for other X11 desktops or distributions may be considered later; it is n
 | Left click | Activate the selected window |
 
 Moving a window **does not automatically switch the active workspace**. The overview remains open after a move. Navigation alone never activates or moves a window.
+
+Workspaces follow their Xfce number, from left to right and then top to bottom.
+Tab moves forward through that order and wraps; Shift+Tab moves backward. Arrows
+follow the visible grid, including empty workspaces, and stop at its outer edges.
 
 The global `Super + Tab` shortcut will be configured through Xfce rather than by installing a system-wide keyboard hook.
 
@@ -132,7 +136,9 @@ session D-Bus. The process exits when the overview closes; no daemon is installe
 
 1. Open two applications on different workspaces; minimize one window and make
    another fullscreen. Launch the overview and check that both appear.
-2. Use Tab / Shift+Tab and arrows. Only selection should change.
+2. Use Tab / Shift+Tab to select the next / previous numbered workspace. Use
+   arrows to select cards and cross into adjacent workspaces at a card-grid edge,
+   including empty workspaces. Only selection should change.
 3. Press Enter or click a card. The chosen window should receive focus; a
    minimized window should be restored and its workspace activated.
 4. Reopen, select a window, press F2, select a destination with arrows, and press
@@ -156,8 +162,12 @@ them. Minimized, unredirected fullscreen, or otherwise unavailable images fall
 back to the real application icon and title. Thumbnails stay in memory. Preview
 availability must be checked on the actual Xfwm4/XLibre setup.
 
-This version supports one monitor and X11 only. It uses an opaque, theme-colored
-background. Automated Linux integration tests use Xvfb, Openbox and xcompmgr;
+This version supports one monitor and X11 only. With an active compositor and an
+RGBA visual, the theme-colored backdrop is translucent (72% opacity). Text and
+previews retain their full opacity. Without compositing, the backdrop is opaque;
+this also updates if compositing changes while the overview is open. Use
+`./scripts/run-x11 --check` to check whether the compositor is active.
+Automated Linux integration tests use Xvfb and Openbox, with and without xcompmgr;
 they do not establish compatibility with every Xfwm4/XLibre configuration.
 
 Package/API references: [Void PyGObject](https://github.com/void-linux/void-packages/blob/master/srcpkgs/python3-gobject/template),
@@ -241,9 +251,12 @@ assert overview.state.is_open
 ```
 
 `cycle_workspace(1)` / `cycle_workspace(-1)` implement Tab / Shift+Tab with wrap.
-`navigate(Direction.RIGHT, columns=2)` implements an arrow key; the caller supplies
-the number of columns in the displayed grid. Arrow navigation stops at edges,
-including incomplete final rows. In move mode it selects a destination workspace.
+`navigate(Direction.RIGHT, columns=2, workspace_columns=3)` implements an arrow
+key; the caller supplies both displayed grids' column counts. At a card-grid edge
+or on an empty workspace, navigation crosses into the adjacent workspace. It
+stops at the outer workspace-grid edges, including incomplete final rows. Omit
+`workspace_columns` for card-only navigation. In move mode arrows select a
+destination workspace.
 `enter()` confirms a move or activates the selected window. `escape()` cancels a
 move first, then closes the overview on the next call. `toggle()` opens/closes it.
 Mouse handlers can use `select_window()` followed by `activate_selected()`.
@@ -270,8 +283,9 @@ are guarded against reentrancy. The overview refreshes its snapshot every 300 ms
 Existing thumbnails stay static for the current opening.
 
 The default test suite skips `tests/integration`. CI additionally enables those
-tests on a disposable Xvfb display with a real window manager and compositor;
-the tests create their own GTK windows and exercise native capture and actions.
+tests on a disposable Xvfb display with a real window manager, with and without a
+compositor. The tests create their own GTK windows and exercise native capture,
+actions, X11 keyboard input, and the rendered backdrop's alpha channel.
 Do not enable `WORKSPACE_OVERVIEW_NATIVE_TESTS=1` on your everyday desktop.
 
 ## Contributing and releases

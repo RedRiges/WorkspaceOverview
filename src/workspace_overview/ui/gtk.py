@@ -9,12 +9,17 @@ from workspace_overview.core.overview import Overview
 from workspace_overview.ui.layout import grid_columns
 
 CSS = b"""
-#workspace-overview { background-color: @theme_bg_color; }
+#workspace-overview { background-image: none; background-color: @theme_bg_color; }
+#workspace-overview.composited { background-color: alpha(@theme_bg_color, 0.72); }
+#workspace-overview scrolledwindow, #workspace-overview viewport {
+    background-image: none; background-color: transparent;
+}
 .workspace { padding: 12px; border: 2px solid alpha(@theme_fg_color, 0.18);
-             border-radius: 8px; }
+             border-radius: 8px; background-color: alpha(@theme_bg_color, 0.9); }
 .workspace.selected { border-color: @theme_selected_bg_color; }
 .workspace.destination { border-color: #d5a326; }
-.window-card { padding: 8px; border: 2px solid transparent; border-radius: 6px; }
+.window-card { padding: 8px; border: 2px solid transparent; border-radius: 6px;
+               background-color: @theme_bg_color; }
 .window-card.selected { border-color: @theme_selected_bg_color;
                        background-color: alpha(@theme_selected_bg_color, 0.22); }
 .overview-title { font-size: 20px; font-weight: bold; }
@@ -35,6 +40,10 @@ def build_application(native, *, previews: bool = True):
             self._busy = False
             self._close_requested = False
             self._event_time = 0
+            self._screen = None
+            self._compositor_handler = 0
+            self._css = None
+            self._has_rgba_visual = False
             self.exit_status = 0
 
         def do_activate(self):
@@ -80,6 +89,15 @@ def build_application(native, *, previews: bool = True):
                 application=self, title="Workspace Overview"
             )
             self.window.set_name("workspace-overview")
+            self._screen = self.window.get_screen()
+            rgba = self._screen.get_rgba_visual()
+            self._has_rgba_visual = rgba is not None
+            if rgba is not None:
+                self.window.set_visual(rgba)  # Must happen before realize.
+            self._compositor_handler = self._screen.connect(
+                "composited-changed", self._update_compositing
+            )
+            self._update_compositing()
             self.window.set_decorated(False)
             self.window.set_skip_taskbar_hint(True)
             self.window.set_skip_pager_hint(True)
@@ -92,10 +110,10 @@ def build_application(native, *, previews: bool = True):
             self.window.connect("key-press-event", self._key)
             self.window.connect("delete-event", self._delete)
             self.window.connect("destroy", self._destroyed)
-            css = Gtk.CssProvider()
-            css.load_from_data(CSS)
+            self._css = Gtk.CssProvider()
+            self._css.load_from_data(CSS)
             Gtk.StyleContext.add_provider_for_screen(
-                self.window.get_screen(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                self._screen, self._css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             root.set_border_width(16)
@@ -114,6 +132,7 @@ def build_application(native, *, previews: bool = True):
             self.scroller = Gtk.ScrolledWindow()
             self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             self.grid = Gtk.Grid(column_spacing=12, row_spacing=12)
+            self.grid.set_direction(Gtk.TextDirection.LTR)
             self.grid.set_column_homogeneous(True)
             self.scroller.add(self.grid)
             root.pack_start(self.scroller, True, True, 0)
@@ -122,7 +141,8 @@ def build_application(native, *, previews: bool = True):
             self.status.get_style_context().add_class("overview-status")
             root.pack_start(self.status, False, False, 0)
             help_label = Gtk.Label(
-                label="Tab / Shift+Tab: workspace   ·   Arrows: window"
+                label="Tab / Shift+Tab: next / previous workspace"
+                "   ·   Arrows: windows / neighboring workspace"
                 "   ·   Enter: activate"
                 "   ·   F2: move   ·   Esc: cancel / close",
                 xalign=0,
@@ -130,6 +150,16 @@ def build_application(native, *, previews: bool = True):
             help_label.set_line_wrap(True)
             root.pack_start(help_label, False, False, 0)
             self.window.realize()
+
+        def _update_compositing(self, *_args):
+            if self.window is None:
+                return
+            style = self.window.get_style_context()
+            if self._has_rgba_visual and self._screen.is_composited():
+                style.add_class("composited")
+            else:
+                style.remove_class("composited")
+            self.window.queue_draw()
 
         def _render(self):
             state = self.overview.state
@@ -158,7 +188,11 @@ def build_application(native, *, previews: bool = True):
                 panel.pack_start(header, False, False, 0)
                 if state.move and workspace.id == state.move.destination_workspace_id:
                     selected_widget = header
+                elif not state.move and workspace.id == state.selected_workspace_id:
+                    # Empty workspaces need a focus/scroll target, too.
+                    selected_widget = header
                 cards = Gtk.Grid(column_spacing=8, row_spacing=8)
+                cards.set_direction(Gtk.TextDirection.LTR)
                 cards.set_column_homogeneous(True)
                 panel.pack_start(cards, False, False, 0)
                 windows = state.snapshot.windows_on(workspace.id)
@@ -339,13 +373,12 @@ def build_application(native, *, previews: bool = True):
                     lambda: self.overview.cycle_workspace(-1 if backwards else 1)
                 )
             elif key in arrows:
-                columns = (
-                    self.workspace_columns
-                    if self.overview.state.move
-                    else self.card_columns
-                )
                 self._perform(
-                    lambda: self.overview.navigate(arrows[key], columns=columns)
+                    lambda: self.overview.navigate(
+                        arrows[key],
+                        columns=self.card_columns,
+                        workspace_columns=self.workspace_columns,
+                    )
                 )
             elif key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
                 self._perform(
@@ -388,6 +421,12 @@ def build_application(native, *, previews: bool = True):
                 self.window.destroy()
 
         def _destroyed(self, *_args):
+            if self._compositor_handler:
+                self._screen.disconnect(self._compositor_handler)
+                self._compositor_handler = 0
+            if self._css is not None:
+                Gtk.StyleContext.remove_provider_for_screen(self._screen, self._css)
+                self._css = None
             if self._timer:
                 GLib.source_remove(self._timer)
                 self._timer = 0

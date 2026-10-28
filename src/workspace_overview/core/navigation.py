@@ -32,3 +32,21 @@ def grid_neighbor(index: int, count: int, columns: int, direction: Direction) ->
                 else index
             )
     raise AssertionError("Unreachable direction")
+
+
+def grid_entry(index: int, count: int, columns: int, direction: Direction) -> int:
+    """Enter a neighboring panel from the opposite edge, preserving row/column."""
+    if index < 0 or count < 1 or columns < 1:
+        raise ValueError("Grid entry requires a valid source and nonempty target")
+    row, column = divmod(index, columns)
+    last_row = (count - 1) // columns
+    match Direction(direction):
+        case Direction.RIGHT:
+            return min(row, last_row) * columns
+        case Direction.LEFT:
+            return min((min(row, last_row) + 1) * columns, count) - 1
+        case Direction.DOWN:
+            return min(column, count - 1)
+        case Direction.UP:
+            return min(last_row * columns + column, count - 1)
+    raise AssertionError("Unreachable direction")

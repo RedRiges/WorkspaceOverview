@@ -187,3 +187,12 @@ def test_missing_timestamp_never_sends_activation(adapter):
     with pytest.raises(BackendError, match="timestamp"):
         backend.activate_window(1)
     assert screen.active_window is None
+
+
+def test_native_workspace_order_follows_desktop_numbers_not_enumeration(adapter):
+    screen, backend = adapter
+    screen.spaces.reverse()
+    first = backend.snapshot()
+    assert [w.name for w in first.workspaces] == ["Desktop 0", "Desktop 1", "Desktop 2"]
+    screen.spaces.reverse()
+    assert backend.snapshot().workspaces == first.workspaces

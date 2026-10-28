@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 from workspace_overview.core.backend import Backend, BackendError
 from workspace_overview.core.models import Preview, Snapshot
-from workspace_overview.core.navigation import Direction, grid_neighbor
+from workspace_overview.core.navigation import Direction, grid_entry, grid_neighbor
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,10 +179,18 @@ class Overview:
         )
         return True
 
-    def navigate(self, direction: Direction, *, columns: int) -> bool:
+    def navigate(
+        self,
+        direction: Direction,
+        *,
+        columns: int,
+        workspace_columns: int | None = None,
+    ) -> bool:
         """Arrow key: navigate cards, or destinations while in move mode.
 
-        The UI supplies the actual column count of the relevant rendered grid.
+        The UI supplies card columns and workspace columns. At a card edge (or
+        on an empty workspace), cross into the neighboring workspace. Omitting
+        workspace_columns retains card-only navigation for non-GUI callers.
         """
         if not self.state.is_open:
             return False
@@ -190,17 +198,35 @@ class Overview:
             move = self.state.move
             ids = [w.id for w in self.state.snapshot.workspaces]
             index = grid_neighbor(
-                ids.index(move.destination_workspace_id), len(ids), columns, direction
+                ids.index(move.destination_workspace_id),
+                len(ids),
+                workspace_columns if workspace_columns is not None else columns,
+                direction,
             )
             return self.select_destination(ids[index])
         windows = self.state.snapshot.windows_on(self.state.selected_workspace_id)
-        if not windows:
+        source_index = 0
+        if windows:
+            ids = [w.id for w in windows]
+            source_index = ids.index(self.state.selected_window_id)
+            index = grid_neighbor(source_index, len(ids), columns, direction)
+            if index != source_index or workspace_columns is None:
+                return self.select_window(ids[index])
+        if workspace_columns is None or self.state.selected_workspace_id is None:
             return False
-        ids = [w.id for w in windows]
-        index = grid_neighbor(
-            ids.index(self.state.selected_window_id), len(ids), columns, direction
+        workspace_ids = [w.id for w in self.state.snapshot.workspaces]
+        source_workspace = workspace_ids.index(self.state.selected_workspace_id)
+        destination = grid_neighbor(
+            source_workspace, len(workspace_ids), workspace_columns, direction
         )
-        return self.select_window(ids[index])
+        if source_workspace == destination:
+            return False
+        self.select_workspace(workspace_ids[destination])
+        targets = self.state.snapshot.windows_on(self.state.selected_workspace_id)
+        if targets:
+            entry = grid_entry(source_index, len(targets), columns, direction)
+            self.select_window(targets[entry].id)
+        return True
 
     def begin_move(self) -> bool:
         if not self.state.is_open or self.state.move is not None:

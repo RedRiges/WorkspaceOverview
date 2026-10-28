@@ -40,7 +40,9 @@ class X11Backend:
         self.screen.force_update()
 
     def _workspaces(self) -> dict:
-        workspaces = self.screen.get_workspaces()
+        # Do not depend on libwnck's enumeration order: Tab and the visual grid
+        # both follow Xfce's desktop numbers, while IDs still track identity.
+        workspaces = sorted(self.screen.get_workspaces(), key=lambda w: w.get_number())
         live = set(workspaces)
         self._workspace_ids = {
             w: key for w, key in self._workspace_ids.items() if w in live
