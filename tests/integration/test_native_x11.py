@@ -211,8 +211,7 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
         app.window.emit("key-press-event", event)
         assert app.window is None
     finally:
-        if app.window is not None:
-            app.window.destroy()
+        app.stop()
         backend.screen.change_workspace_count(original_workspace_count)
         settle(
             native,

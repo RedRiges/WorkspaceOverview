@@ -1,20 +1,14 @@
 """Native entry point. Never silently substitutes a mock backend."""
 
-import argparse
 import sys
 
+from workspace_overview.cli import parse_args
 from workspace_overview.core.backend import BackendError
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Workspace Overview for Xfce/X11")
-    parser.add_argument(
-        "--check", action="store_true", help="check native dependencies and X11 session"
-    )
-    parser.add_argument(
-        "--no-previews", action="store_true", help="use window icons and titles only"
-    )
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(argv)
     try:
         from workspace_overview.native import load_native
 
@@ -22,7 +16,9 @@ def main(argv=None) -> int:
         if args.check:
             from workspace_overview.backends.x11 import create_backend
 
-            backend = create_backend(native, lambda: 0, previews=not args.no_previews)
+            backend = create_backend(
+                native, lambda: 0, previews=args.previews is not False
+            )
             try:
                 snapshot = backend.snapshot()
                 manager = backend.screen.get_window_manager_name() or "unknown"
@@ -40,8 +36,8 @@ def main(argv=None) -> int:
             return 0
         from workspace_overview.ui.gtk import build_application
 
-        app = build_application(native, previews=not args.no_previews)
-        result = app.run([sys.argv[0]])
+        app = build_application(native)
+        result = app.run([sys.argv[0], *argv])
         return app.exit_status or result
     except BackendError as exc:
         print(f"workspace-overview: {exc}", file=sys.stderr)

@@ -3,9 +3,13 @@
 import sys
 
 from workspace_overview.backends.x11 import create_backend
+from workspace_overview.cli import parse_args
 from workspace_overview.core.backend import BackendError
 from workspace_overview.core.navigation import Direction
 from workspace_overview.core.overview import Overview
+from workspace_overview.native import drain_events
+from workspace_overview.previews.cache import PreviewSampler, RamPreviewCache
+from workspace_overview.previews.session import SessionGuard
 from workspace_overview.ui.layout import strip_dimensions
 
 CSS = b"""
@@ -40,7 +44,10 @@ def build_application(native, *, previews: bool = True):
 
     class Application(Gtk.Application):
         def __init__(self):
-            super().__init__(application_id="io.github.redriges.WorkspaceOverview")
+            super().__init__(
+                application_id="io.github.redriges.WorkspaceOverview",
+                flags=native.Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
+            )
             self.window = None
             self.overview = None
             self.backend = None
@@ -55,22 +62,153 @@ def build_application(native, *, previews: bool = True):
             self._selected_panel = None
             self._reveal_pending = False
             self._reveal_source = 0
+            self.cache = RamPreviewCache()
+            self.guard = None
+            self.sampler = None
+            self._previews_enabled = previews
+            self._background_timer = 0
+            self._closed_handler = 0
+            self._held = False
+            self._own_xid = None
+            self._rendered_revision = -1
+            self._render_pending = False
+            self._stop_requested = False
+            self._capture_error = False
             self.exit_status = 0
 
+        def do_command_line(self, command):
+            try:
+                args = parse_args(command.get_arguments()[1:])
+            except SystemExit as exc:
+                return int(exc.code)
+            if args.quit:
+                self.stop()
+                return 0
+            if args.status:
+                command.print_literal(self.cache_status() + "\n")
+                return 0
+            if args.clear_cache:
+                self._clear_previews()
+                return 0
+            if args.previews is not None:
+                self._previews_enabled = args.previews
+                if not args.previews:
+                    self._clear_previews()
+            try:
+                if args.background:
+                    self._ensure_resident()
+                else:
+                    self.activate()
+            except BackendError as exc:
+                command.printerr_literal(f"workspace-overview: {exc}\n")
+                self.stop()
+                return 2
+            return self.exit_status
+
+        def _ensure_resident(self):
+            if self.backend is not None:
+                return
+            self.backend = create_backend(native, self._timestamp, previews=True)
+            self.guard = SessionGuard(native, self._lock_changed)
+            self.sampler = PreviewSampler(
+                self.backend,
+                self.cache,
+                self._capture_permitted,
+                after_capture=lambda: drain_events(native),
+            )
+            self._closed_handler = self.backend.screen.connect(
+                "window-closed", self._window_closed
+            )
+            self.hold()
+            self._held = True
+            self._background_timer = GLib.timeout_add(750, self._sample_background)
+
+        def _capture_permitted(self):
+            return (
+                self._previews_enabled
+                and not self._stop_requested
+                and self.guard is not None
+                and self.guard.state == "unlocked"
+                and native.Gdk.Screen.get_default().is_composited()
+            )
+
+        def cache_status(self):
+            if self.backend is None:
+                return "Workspace Overview is not running."
+            if not self._previews_enabled:
+                state = "disabled"
+            elif self.guard.state != "unlocked":
+                state = f"paused (screen-lock state: {self.guard.state})"
+            elif not native.Gdk.Screen.get_default().is_composited():
+                state = "paused (no compositor)"
+            elif self._capture_error:
+                state = "paused (window discovery unavailable)"
+            else:
+                state = "active"
+            return (
+                f"Background capture: {state}\n"
+                f"RAM cache: {len(self.cache.images)} images; "
+                f"{self.cache.bytes_used} / {self.cache.max_bytes} bytes"
+            )
+
+        def _clear_previews(self):
+            self.cache.clear()
+            self._render_pending = True
+            if self.overview is not None and not self._busy:
+                self._render()
+
+        def _lock_changed(self, state):
+            if state != "unlocked":
+                self._clear_previews()
+            if state == "locked":
+                self._close()
+            self._render_pending = True
+
+        def _window_closed(self, _screen, window):
+            self.cache.remove(window.get_xid())
+
+        def _sample_background(self):
+            if self._busy or self.backend is None:
+                return True
+            self._busy = True
+            try:
+                snapshot = self.backend.snapshot()
+                self.sampler.sample(snapshot, only_missing=self.overview is not None)
+                self._capture_error = False
+            except BackendError:
+                self.cache.clear()
+                self._capture_error = True
+            finally:
+                self._busy = False
+            self._finish_pending()
+            return self.backend is not None
+
+        def _finish_pending(self):
+            if self._stop_requested:
+                self.stop()
+            elif self._close_requested:
+                self._close()
+
         def do_activate(self):
+            if self._busy:
+                self._close_requested = True
+                return
             if self.window is not None:
                 self._close()
                 return
             self._busy = True
             try:
+                self._ensure_resident()
+                if self.guard.state == "locked":
+                    return
+                self._close_requested = False
                 self._create_window()
-                self.backend = create_backend(
-                    native, self._timestamp, previews=previews
-                )
-                self.backend.excluded_xids.add(self.window.get_window().get_xid())
-                self.overview = Overview(self.backend)
+                self._own_xid = self.window.get_window().get_xid()
+                self.backend.excluded_xids.add(self._own_xid)
+                self.overview = Overview(self.backend, previews=self.cache.images)
                 if not self.overview.open():
                     raise BackendError(self.overview.state.error)
+                self.sampler.reconcile(self.overview.state.snapshot)
                 self._render()
                 self.window.show_all()
                 self.window.present_with_time(self._timestamp())
@@ -80,11 +218,10 @@ def build_application(native, *, previews: bool = True):
                 self.exit_status = 2
                 if self.window is not None:
                     self.window.destroy()
-                self.quit()
+                self._stop_requested = True
             finally:
                 self._busy = False
-            if self._close_requested:
-                self._close()
+            self._finish_pending()
 
         def _timestamp(self):
             if self._event_time:
@@ -262,7 +399,13 @@ def build_application(native, *, previews: bool = True):
                     f"{len(state.snapshot.windows)} windows · "
                     f"{len(state.snapshot.workspaces)} workspaces"
                 )
+                if not self._previews_enabled:
+                    message += " · Previews disabled"
+                elif self.guard.state != "unlocked":
+                    message += " · Previews paused: screen-lock state unknown"
             self.status.set_text(message)
+            self._rendered_revision = self.cache.revision
+            self._render_pending = False
             self._reveal_pending = True
             self.grid.show_all()
             if selected_widget is not None:
@@ -408,8 +551,7 @@ def build_application(native, *, previews: bool = True):
             finally:
                 self._event_time = 0
                 self._busy = False
-            if self._close_requested:
-                self._close()
+            self._finish_pending()
 
         def _card_clicked(self, _button, window_id):
             if self._busy:
@@ -489,14 +631,17 @@ def build_application(native, *, previews: bool = True):
             try:
                 before = self.overview.state
                 self.overview.refresh()
-                if self.overview.state != before:
+                self.sampler.reconcile(self.overview.state.snapshot)
+                if (
+                    self.overview.state != before
+                    or self._rendered_revision != self.cache.revision
+                    or self._render_pending
+                ):
                     self._render()
             finally:
                 self._busy = False
-            if self._close_requested:
-                self._close()
-                return False
-            return True
+            self._finish_pending()
+            return self.overview is not None
 
         def _delete(self, *_args):
             self._close()
@@ -506,6 +651,7 @@ def build_application(native, *, previews: bool = True):
             if self._busy:
                 self._close_requested = True
             elif self.window is not None:
+                self._close_requested = False
                 self.window.destroy()
 
         def _destroyed(self, *_args):
@@ -525,11 +671,45 @@ def build_application(native, *, previews: bool = True):
                 self._timer = 0
             if self.overview:
                 self.overview.close()
-            if self.backend:
-                self.backend.close()
+            if self.backend and self._own_xid is not None:
+                self.backend.excluded_xids.discard(self._own_xid)
+            self._own_xid = None
             self.window = None
             self.overview = None
-            self.backend = None
+
+        def stop(self):
+            self._stop_requested = True
+            self.cache.clear()
+            if self._busy:
+                return
+            if self.window is not None:
+                self.window.destroy()
+            self._dispose_resident()
             self.quit()
+
+        def _dispose_resident(self):
+            if self._background_timer:
+                GLib.source_remove(self._background_timer)
+                self._background_timer = 0
+            if self.guard is not None:
+                self.guard.close()
+                self.guard = None
+            if self.backend is not None:
+                if self._closed_handler:
+                    self.backend.screen.disconnect(self._closed_handler)
+                    self._closed_handler = 0
+                self.backend.close()
+                self.backend = None
+            self.sampler = None
+            self.cache.clear()
+            if self._held:
+                self.release()
+                self._held = False
+
+        def do_shutdown(self):
+            if self.window is not None:
+                self.window.destroy()
+            self._dispose_resident()
+            Gtk.Application.do_shutdown(self)
 
     return Application()

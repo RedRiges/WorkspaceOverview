@@ -181,6 +181,10 @@ class X11Backend:
         self._window(window_id)
         return self._previews.capture(window_id) if self._previews else None
 
+    def preview_identity(self, window_id: int):
+        """Native object identity prevents thumbnails surviving XID reuse."""
+        return self._window(window_id)
+
     def icon(self, window_id: int):
         return self._window(window_id).get_icon()
 

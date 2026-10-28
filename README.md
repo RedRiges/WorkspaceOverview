@@ -2,6 +2,11 @@
 
 lightweight, keyboard-first workspace overview for Xfce on X11
 
+**Experimental branch: `experiment/ram-preview-cache`.** The overview now stays
+running after its window closes and collects bounded thumbnails in RAM. Stop it
+with `./scripts/run-x11 --quit` before changing branches or updating this checkout.
+No autostart entry or system service is installed.
+
 **The default layout on `master` is a single horizontal row.** The row fits the
 screen when space permits; with more workspaces
 it scrolls horizontally and reveals the selected workspace or move destination.
@@ -151,7 +156,63 @@ the window controls separately from XComposite capture.
 For `Super+Tab`, copy the absolute path printed by `realpath scripts/run-x11`
 into **Xfce Settings → Keyboard → Application Shortcuts**, and assign the shortcut
 manually. Repeating the launch command toggles an existing overview through the
-session D-Bus. The process exits when the overview closes; no daemon is installed.
+session D-Bus. In this branch, closing the overview leaves the process running
+to collect thumbnails. The first terminal launch therefore remains running;
+subsequent commands are forwarded to that instance. No daemon or autostart entry
+is installed.
+
+### Experimental RAM preview cache
+
+After closing the old version, switch to this branch:
+
+```bash
+git fetch origin
+git switch experiment/ram-preview-cache
+./scripts/run-x11
+```
+
+Visit the workspaces normally and allow a moment for their windows to be captured.
+Reopening the overview shows the most recently captured thumbnails of windows
+that are now hidden or minimized. Previously unseen windows still show icons.
+
+Commands can be issued from another terminal:
+
+| Command | Effect |
+| --- | --- |
+| `./scripts/run-x11` | Open/close the overview; start the resident if needed |
+| `./scripts/run-x11 --background &` | Start capture without opening the overview |
+| `./scripts/run-x11 --status` | Show capture state, image count and cache bytes; no titles |
+| `./scripts/run-x11 --clear-cache` | Discard images; permitted capture can refill the cache |
+| `./scripts/run-x11 --background --no-previews` | Disable capture and discard images |
+| `./scripts/run-x11 --background --previews` | Re-enable capture |
+| `./scripts/run-x11 --quit` | Stop the resident and discard its cache |
+
+The cache holds at most **16 MiB of RGB thumbnail pixels**, with individual images
+at most 320×200. This limit does not include GTK widgets or transient X11 image
+buffers. At most one window is sampled every 750 ms, from the currently active
+workspace and only if mapped and not minimized. Capture never activates,
+unminimizes, moves or redirects windows and never switches workspaces. When the
+overview is visible, existing thumbnails remain static; only missing images are
+filled. Old entries are evicted when space is needed, and closed windows and
+reused X window IDs lose their cached images.
+
+The process writes no preview files, logs no pixels, and sends no images over the
+network. Images live in ordinary process memory; OS swap/hibernation policies
+still apply. Clearing removes application references, not guaranteed secure
+zeroization of Python/GTK memory.
+
+Capture requires a compositor and a known inactive screen saver. The resident
+observes existing `org.xfce.ScreenSaver`, `org.freedesktop.ScreenSaver` and
+`org.gnome.ScreenSaver` D-Bus services. Activation clears the cache, closes the
+overview and pauses capture. Loss of the service or an unknown state also clears
+the cache and pauses capture. It neither starts nor configures a locker. If no
+supported service is available, `--status` reports `screen-lock state: unknown`
+and the overview uses icons; unsupported lockers do not provide a reliable signal
+for this implementation. D-Bus command output requires GLib 2.80 or newer.
+
+Stop with `--quit` **before updating or switching branches**, since an already
+running Python process continues using its loaded code. `master` keeps the
+non-resident version until this experiment is accepted.
 
 ### First real-session checks
 
@@ -304,10 +365,12 @@ is cancelled if its source disappears, moves externally, or its destination
 disappears. Mock helpers `add_window()`, `remove_window()`, `set_snapshot()`, and
 `fail_next("move", "Refused")` simulate these conditions.
 
-Previews are captured once per opening and once for newly discovered windows.
-`overview.previews` is read-only; a `None` entry means show the window's icon/title.
-The mock generates small RGB checkerboards in memory. Closing clears the preview
-cache; no titles or images are saved to disk by the core or backend.
+The default portable `Overview` captures once per opening and for newly discovered
+windows, then clears its private images on close. The native resident instead
+supplies `Overview(..., previews=cache.images)`, a shared read-only mapping owned
+by the bounded sampler. Closing the overlay does not clear that shared cache.
+A missing/`None` preview means use the icon/title. The mock generates small RGB
+checkerboards in memory; no preview files are written by either implementation.
 
 The backend contract is synchronous. The core verifies action results using a
 fresh snapshot, including rejection of silent no-ops. The X11 adapter pumps the
@@ -318,7 +381,9 @@ Existing thumbnails stay static for the current opening.
 The default test suite skips `tests/integration`. CI additionally enables those
 tests on a disposable Xvfb display with a real window manager, with and without a
 compositor. The tests create their own GTK windows and exercise native capture,
-actions, X11 keyboard input, and the rendered backdrop's alpha channel.
+actions, X11 keyboard input, and the rendered backdrop's alpha channel. A separate
+resident subprocess runs on a private D-Bus session to check command forwarding,
+cache retention across workspaces, closed-window cleanup and lock-service signals.
 Do not enable `WORKSPACE_OVERVIEW_NATIVE_TESTS=1` on your everyday desktop.
 
 ## Contributing and releases

@@ -34,10 +34,13 @@ class Overview:
     Errors requiring explanation are available in state.error.
     """
 
-    def __init__(self, backend: Backend) -> None:
+    def __init__(
+        self, backend: Backend, *, previews: Mapping[int, Preview] | None = None
+    ) -> None:
         self._backend = backend
         self._state = OverviewState()
         self._previews: dict[int, Preview | None] = {}
+        self._shared_previews = previews
 
     @property
     def state(self) -> OverviewState:
@@ -45,6 +48,8 @@ class Overview:
 
     @property
     def previews(self) -> Mapping[int, Preview | None]:
+        if self._shared_previews is not None:
+            return self._shared_previews
         return MappingProxyType(self._previews)
 
     def _error(self, message: str) -> bool:
@@ -59,6 +64,8 @@ class Overview:
         return windows[0].id if windows else None
 
     def _capture_new_previews(self) -> None:
+        if self._shared_previews is not None:
+            return  # Resident sampler owns capture, eviction and lifetime.
         ids = {window.id for window in self.state.snapshot.windows}
         for removed in self._previews.keys() - ids:
             del self._previews[removed]
