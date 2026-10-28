@@ -156,6 +156,16 @@ workspaces** label. They can be activated; moving them requires unpinning throug
 the window manager first. Normal and dialog windows are included; panels, desktop
 windows, tooltips, and the overview itself are excluded.
 
+Window-state badges appear in the upper-right corner of the thumbnail, including
+when only an application icon is available:
+
+- **На весь экран**: fullscreen icon and an accent-colored badge.
+- **Свёрнуто**: minimize icon and a neutral outlined badge.
+
+Both badges appear when a fullscreen window is minimized. They follow the
+window's state as the overview refreshes; maximized windows are not marked as
+fullscreen. Badges pass clicks through to the card.
+
 Previews use existing XComposite pixmaps, including window-manager frames when
 applicable. The app does not redirect windows itself or capture the desktop behind
 them. Minimized, unredirected fullscreen, or otherwise unavailable images fall

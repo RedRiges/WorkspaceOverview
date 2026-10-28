@@ -22,6 +22,12 @@ CSS = b"""
                background-color: @theme_bg_color; }
 .window-card.selected { border-color: @theme_selected_bg_color;
                        background-color: alpha(@theme_selected_bg_color, 0.22); }
+.window-state-badge { padding: 4px 7px; border-radius: 6px;
+                      font-size: 11px; font-weight: bold; }
+.fullscreen-badge { background-color: @theme_selected_bg_color;
+                    color: @theme_selected_fg_color; }
+.minimized-badge { background-color: @theme_bg_color; color: @theme_fg_color;
+                   border: 1px solid alpha(@theme_fg_color, 0.45); }
 .overview-title { font-size: 20px; font-weight: bold; }
 .overview-status { padding: 6px; }
 """
@@ -283,20 +289,48 @@ def build_application(native, *, previews: bool = True):
                     )
                 else:
                     image.set_from_icon_name(window.icon_name, Gtk.IconSize.DIALOG)
-            box.pack_start(image, False, False, 0)
+            thumbnail = Gtk.Overlay()
+            thumbnail.add(image)
+            states = []
+            if window.fullscreen:
+                states.append(
+                    ("fullscreen-badge", "view-fullscreen-symbolic", "На весь экран")
+                )
+            if window.minimized:
+                states.append(
+                    ("minimized-badge", "window-minimize-symbolic", "Свёрнуто")
+                )
+            badges = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            badges.set_halign(Gtk.Align.END)
+            badges.set_valign(Gtk.Align.START)
+            badges.set_margin_top(4)
+            badges.set_margin_end(4)
+            for style, icon_name, text in states:
+                badge = Gtk.Box(spacing=4)
+                badge.get_style_context().add_class("window-state-badge")
+                badge.get_style_context().add_class(style)
+                badge.set_halign(Gtk.Align.END)
+                badge.pack_start(
+                    Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU),
+                    False,
+                    False,
+                    0,
+                )
+                badge.pack_start(Gtk.Label(label=text), False, False, 0)
+                badges.pack_start(badge, False, False, 0)
+            if states:
+                thumbnail.add_overlay(badges)
+                thumbnail.set_overlay_pass_through(badges, True)
+            box.pack_start(thumbnail, False, False, 0)
             label = Gtk.Label(label=window.title)
             label.set_max_width_chars(24)
             label.set_ellipsize(native.Pango.EllipsizeMode.END)
             box.pack_start(label, False, False, 0)
             flags = []
-            if window.minimized:
-                flags.append("minimized")
-            if window.fullscreen:
-                flags.append("fullscreen")
             if window.pinned:
                 flags.append("all workspaces")
             box.pack_start(Gtk.Label(label=" · ".join(flags)), False, False, 0)
-            card.set_tooltip_text(window.title)
+            card.set_tooltip_text("\n".join([window.title, *(s[2] for s in states)]))
             card.connect("clicked", self._card_clicked, window.id)
             return card
 
