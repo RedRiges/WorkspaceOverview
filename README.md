@@ -4,7 +4,7 @@ lightweight, keyboard-first workspace overview for Xfce on X11
 
 Workspace Overview aims to make it easy to find, activate, and move windows across workspaces—including windows hidden behind fullscreen applications. Inspired by the overview experience of macOS Mission Control, it is designed to fit naturally into Xfce rather than replace its window manager
 
-> **Status: early development / v0.1 specification** 
+> **Status: core and mock backend implemented; GTK/X11 integration planned**
 
 ## Target platform
 
@@ -90,8 +90,8 @@ Created mainly by LLMs with a sysadmin-level-competency real person supervision.
 
 ## Development setup (macOS)
 
-The repository currently contains development tooling only. Application code,
-the core, and the mock backend have not been implemented yet.
+The platform-independent core and in-memory mock backend run on macOS. The GTK
+interface and real X11 backend are not implemented yet.
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if needed
 (`brew install uv` on macOS), then run these commands from the repository root:
@@ -118,9 +118,76 @@ uv run --locked ruff format --check .
 uv run --locked pytest
 ```
 
-There are no Python source files or tests yet. pytest currently exits with code 5
-(`no tests collected`). This is expected until actual tests are added; it is not
-a passing test suite.
+Run the console walkthrough with synthetic workspaces and windows:
+
+```sh
+uv run --locked workspace-overview-demo
+```
+
+It lists three workspaces and four windows, moves the synthetic Browser to the
+empty workspace, then activates it. It never reads or controls real windows.
+This is a scripted demonstration, not an interactive window overview.
+
+## Core and mock backend
+
+The package lives in `src/workspace_overview`:
+
+| Module | Responsibility |
+| --- | --- |
+| `core/models.py` | Immutable workspaces, windows, validated snapshots, and RGB previews |
+| `core/backend.py` | Backend protocol and expected operation errors |
+| `core/navigation.py` | Arrow navigation through a row-major grid |
+| `core/overview.py` | Selection, opening/closing, move confirmation, and state reconciliation |
+| `backends/mock.py` | In-memory session, generated previews, and simulated failures |
+
+The core has no runtime dependencies outside the Python standard library. For
+example, from `uv run python`:
+
+```python
+from workspace_overview.backends.mock import MockBackend
+from workspace_overview.core.overview import Overview
+
+backend = MockBackend.demo()
+overview = Overview(backend)
+overview.open()
+overview.select_window(102)  # Synthetic Browser; does not activate it.
+overview.begin_move()
+overview.select_destination(30)
+overview.confirm_move()  # Returns True only after observing the result.
+
+assert overview.state.snapshot.active_workspace_id == 10
+assert overview.state.selected_workspace_id == 30
+assert overview.state.is_open
+```
+
+`cycle_workspace(1)` / `cycle_workspace(-1)` implement Tab / Shift+Tab with wrap.
+`navigate(Direction.RIGHT, columns=2)` implements an arrow key; the caller supplies
+the number of columns in the displayed grid. Arrow navigation stops at edges,
+including incomplete final rows. In move mode it selects a destination workspace.
+`enter()` confirms a move or activates the selected window. `escape()` cancels a
+move first, then closes the overview on the next call. `toggle()` opens/closes it.
+Mouse handlers can use `select_window()` followed by `activate_selected()`.
+
+Successful moves keep the overview open and select the moved window at its
+destination without changing the active workspace. Successful activation closes
+the overview. Backend failures leave it open and populate `state.error`.
+
+Call `refresh()` after external changes. Selection uses stable IDs, surviving
+reordering; removal falls back to an available window/workspace. A pending move
+is cancelled if its source disappears, moves externally, or its destination
+disappears. Mock helpers `add_window()`, `remove_window()`, `set_snapshot()`, and
+`fail_next("move", "Refused")` simulate these conditions.
+
+Previews are captured once per opening and once for newly discovered windows.
+`overview.previews` is read-only; a `None` entry means show the window's icon/title.
+The mock generates small RGB checkerboards in memory. Closing clears the preview
+cache; no titles or images are saved to disk by the core or backend.
+
+The backend contract is currently synchronous. The core verifies action results
+using a fresh snapshot, including rejection of silent no-ops. Real X11 requests
+will need bounded completion handling in their adapter or a future pending-action
+API. Sticky windows, UI layout/rendering, event subscriptions, native image
+capture, and real X11 operations are not implemented by this milestone.
 
 ## Contributing and releases
 

@@ -8,11 +8,16 @@ license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = []
 
-[tool.uv]
-package = false
+[project.scripts]
+workspace-overview-demo = "workspace_overview.demo:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14"]
+build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers", "--import-mode=importlib"]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
