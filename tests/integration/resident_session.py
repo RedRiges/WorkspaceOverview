@@ -148,6 +148,7 @@ def main():
                 command(python=route == "python")
                 settle(has_overview)
                 timings[route].append((time.perf_counter() - started) * 1000)
+                settle(lambda: "first-paint=" in command("--status"))
                 command()
                 settle(lambda: not has_overview())
         print(
@@ -158,7 +159,7 @@ def main():
             )
         )
         status = command("--status")
-        assert "first-draw=" in status, status
+        assert "first-paint=" in status, status
         print(status)
         window.destroy()
         settle(lambda: "0 images" in command("--status"))

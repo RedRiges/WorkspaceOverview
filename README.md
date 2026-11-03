@@ -170,9 +170,9 @@ activation is sent, a timeout is reported without automatically toggling again.
 For opening-delay diagnostics, open the overview a few times and run
 `./scripts/run-x11 --status` in another terminal. It reports the last opening's
 setup, window discovery, widget construction and show-request times, plus the
-time to the first GTK draw and the last/maximum sampling duration. These are
+time to the first completed GTK paint and the last/maximum sampling duration. These are
 in-process measurements: they exclude shortcut dispatch and launcher startup,
-and a GTK draw is not a measurement of the compositor presenting a frame. The
+and a GTK paint is not a measurement of the compositor presenting a frame. The
 measurements contain no window titles or images and are not written to files.
 
 ### Experimental RAM preview cache

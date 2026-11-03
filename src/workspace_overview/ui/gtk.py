@@ -80,6 +80,8 @@ def build_application(native, *, previews: bool = True):
             self._toggle_pending = False
             self._toggle_source = 0
             self._opening_started = None
+            self._frame_clock = None
+            self._frame_handler = 0
             self._open_timings = {}
             self._sampling_ms = 0.0
             self._sampling_max_ms = 0.0
@@ -277,13 +279,14 @@ def build_application(native, *, previews: bool = True):
                 self._busy = False
             self._finish_pending()
 
-        def _first_draw(self, *_args):
-            if self._opening_started is not None:
-                self._open_timings["first-draw"] = (
+        def _first_paint(self, *_args):
+            if self._opening_started is not None and self.window.get_mapped():
+                self._open_timings["first-paint"] = (
                     time.perf_counter() - self._opening_started
                 ) * 1000
                 self._opening_started = None
-            return False
+                self._frame_clock.disconnect(self._frame_handler)
+                self._frame_handler = 0
 
         def _timestamp(self):
             if self._event_time:
@@ -320,7 +323,6 @@ def build_application(native, *, previews: bool = True):
             self.window.connect("key-press-event", self._key)
             self.window.connect("delete-event", self._delete)
             self.window.connect("destroy", self._destroyed)
-            self.window.connect_after("draw", self._first_draw)
             self._css = Gtk.CssProvider()
             self._css.load_from_data(CSS)
             Gtk.StyleContext.add_provider_for_screen(
@@ -365,6 +367,10 @@ def build_application(native, *, previews: bool = True):
             help_label.set_line_wrap(True)
             root.pack_start(help_label, False, False, 0)
             self.window.realize()
+            self._frame_clock = self.window.get_frame_clock()
+            self._frame_handler = self._frame_clock.connect(
+                "after-paint", self._first_paint
+            )
 
         def _update_compositing(self, *_args):
             if self.window is None:
@@ -720,6 +726,10 @@ def build_application(native, *, previews: bool = True):
 
         def _destroyed(self, *_args):
             self._opening_started = None
+            if self._frame_handler:
+                self._frame_clock.disconnect(self._frame_handler)
+                self._frame_handler = 0
+            self._frame_clock = None
             self._reveal_pending = False
             self._selected_panel = None
             if self._reveal_source:
