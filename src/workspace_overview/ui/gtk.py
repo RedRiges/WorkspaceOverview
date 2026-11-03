@@ -3,10 +3,12 @@
 import signal
 import sys
 import time
+from dataclasses import dataclass
 
 from workspace_overview.backends.x11 import create_backend
 from workspace_overview.cli import parse_args
 from workspace_overview.core.backend import BackendError
+from workspace_overview.core.models import Preview, Window
 from workspace_overview.core.navigation import Direction
 from workspace_overview.core.overview import Overview
 from workspace_overview.previews.cache import PreviewSampler, RamPreviewCache
@@ -41,6 +43,30 @@ CSS = b"""
 """
 
 
+@dataclass
+class WorkspaceWidgets:
+    panel: object
+    header: object
+    cards: object
+    empty: object
+
+
+@dataclass
+class CardWidgets:
+    button: object
+    image: object
+    model: Window
+    preview: Preview | None
+
+
+def set_style_class(widget, name, enabled):
+    style = widget.get_style_context()
+    if enabled and not style.has_class(name):
+        style.add_class(name)
+    elif not enabled and style.has_class(name):
+        style.remove_class(name)
+
+
 def build_application(native, *, previews: bool = True):
     Gtk, Gdk, GLib = native.Gtk, native.Gdk, native.GLib
 
@@ -62,6 +88,9 @@ def build_application(native, *, previews: bool = True):
             self._css = None
             self._has_rgba_visual = False
             self._selected_panel = None
+            self._panels = {}
+            self._cards = {}
+            self._focus_target = None
             self._reveal_pending = False
             self._reveal_source = 0
             self.cache = RamPreviewCache()
@@ -394,72 +423,100 @@ def build_application(native, *, previews: bool = True):
             self.window.queue_draw()
 
         def _render(self):
+            focused_before = self.window.get_focus()
             state = self.overview.state
             width = native.display.get_monitor(0).get_geometry().width
             self.workspace_columns, self.card_columns, panel_width = strip_dimensions(
                 width, len(state.snapshot.workspaces)
             )
             self._selected_panel = None
-            for child in self.grid.get_children():
-                child.destroy()
             selected_widget = None
+            layout_changed = False
+            live_windows = {w.id for w in state.snapshot.windows}
+            for window_id in self._cards.keys() - live_windows:
+                self._cards.pop(window_id).button.destroy()
+                layout_changed = True
             for index, workspace in enumerate(state.snapshot.workspaces):
-                panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-                panel.set_valign(Gtk.Align.START)
-                panel.set_hexpand(True)
-                panel.set_size_request(panel_width, -1)
-                style = panel.get_style_context()
-                style.add_class("workspace")
-                if workspace.id == state.selected_workspace_id:
-                    style.add_class("selected")
-                if state.move and workspace.id == state.move.destination_workspace_id:
-                    style.add_class("destination")
+                if workspace.id not in self._panels:
+                    panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+                    panel.set_valign(Gtk.Align.START)
+                    panel.set_hexpand(True)
+                    panel.get_style_context().add_class("workspace")
+                    header = Gtk.Button()
+                    header.connect("clicked", self._workspace_clicked, workspace.id)
+                    panel.pack_start(header, False, False, 0)
+                    cards = Gtk.Grid(column_spacing=8, row_spacing=8)
+                    cards.set_direction(Gtk.TextDirection.LTR)
+                    cards.set_column_homogeneous(True)
+                    panel.pack_start(cards, False, False, 0)
+                    empty = Gtk.Label(label="No windows")
+                    empty.set_no_show_all(True)
+                    panel.pack_start(empty, False, False, 16)
+                    self._panels[workspace.id] = WorkspaceWidgets(
+                        panel, header, cards, empty
+                    )
+                widgets = self._panels[workspace.id]
+                panel, header, cards = widgets.panel, widgets.header, widgets.cards
+                if panel.get_size_request()[0] != panel_width:
+                    panel.set_size_request(panel_width, -1)
+                    layout_changed = True
+                layout_changed |= self._attach(self.grid, panel, index, 0)
+                set_style_class(
+                    panel, "selected", workspace.id == state.selected_workspace_id
+                )
+                destination = (
+                    state.move is not None
+                    and workspace.id == state.move.destination_workspace_id
+                )
+                set_style_class(panel, "destination", destination)
                 name = workspace.name
                 if workspace.id == state.snapshot.active_workspace_id:
                     name += "  • active"
-                header = Gtk.Button(label=f"{index + 1} · {name}")
-                header.get_child().set_ellipsize(native.Pango.EllipsizeMode.END)
-                header.get_child().set_max_width_chars(22)
-                header.set_tooltip_text(name)
-                header.connect("clicked", self._workspace_clicked, workspace.id)
-                panel.pack_start(header, False, False, 0)
-                if state.move and workspace.id == state.move.destination_workspace_id:
+                label = f"{index + 1} · {name}"
+                if header.get_label() != label:
+                    header.set_label(label)
+                    header.get_child().set_ellipsize(native.Pango.EllipsizeMode.END)
+                    header.get_child().set_max_width_chars(22)
+                    header.set_tooltip_text(name)
+                if destination or (
+                    not state.move and workspace.id == state.selected_workspace_id
+                ):
                     selected_widget = header
                     self._selected_panel = panel
-                elif not state.move and workspace.id == state.selected_workspace_id:
-                    # Empty workspaces need a focus/scroll target, too.
-                    selected_widget = header
-                    self._selected_panel = panel
-                cards = Gtk.Grid(column_spacing=8, row_spacing=8)
-                cards.set_direction(Gtk.TextDirection.LTR)
-                cards.set_column_homogeneous(True)
-                panel.pack_start(cards, False, False, 0)
                 windows = state.snapshot.windows_on(workspace.id)
-                if not windows:
-                    panel.pack_start(Gtk.Label(label="No windows"), False, False, 16)
+                widgets.empty.set_visible(not windows)
                 for card_index, window in enumerate(windows):
-                    card = self._card(window)
-                    cards.attach(
-                        card,
+                    if window.id not in self._cards:
+                        self._cards[window.id] = self._card(window)
+                    card = self._cards[window.id]
+                    if card.model != window:
+                        # Keep the button and its focus; only its content changed.
+                        card.button.get_child().destroy()
+                        card.image = self._fill_card(card.button, window)
+                        card.model = window
+                        card.preview = self.overview.previews.get(window.id)
+                    preview = self.overview.previews.get(window.id)
+                    if card.preview is not preview:
+                        self._update_image(card.image, window, preview)
+                        card.preview = preview
+                    layout_changed |= self._attach(
+                        cards,
+                        card.button,
                         card_index % self.card_columns,
                         card_index // self.card_columns,
-                        1,
-                        1,
                     )
-                    if window.id == state.selected_window_id:
-                        card.get_style_context().add_class("selected")
-                        if not state.move:
-                            selected_widget = card
-                self.grid.attach(
-                    panel,
-                    index,
-                    0,
-                    1,
-                    1,
-                )
-            self.move_button.set_label(
-                "Confirm move · Enter" if state.move else "Move selected · F2"
-            )
+                    selected = window.id == state.selected_window_id
+                    set_style_class(card.button, "selected", selected)
+                    if selected and not state.move:
+                        selected_widget = card.button
+            # Reparent surviving cards before destroying removed workspaces.
+            live_workspaces = {w.id for w in state.snapshot.workspaces}
+            for workspace_id in self._panels.keys() - live_workspaces:
+                self._panels.pop(workspace_id).panel.destroy()
+                layout_changed = True
+            move_label = "Confirm move · Enter" if state.move else "Move selected · F2"
+            if self.move_button.get_label() != move_label:
+                self.move_button.set_label(move_label)
             selected = state.snapshot.window(state.selected_window_id)
             self.move_button.set_sensitive(selected is not None and not selected.pinned)
             if state.error:
@@ -483,14 +540,38 @@ def build_application(native, *, previews: bool = True):
                     message += " · Previews disabled"
                 elif self.guard.state != "unlocked":
                     message += " · Previews paused: screen-lock state unknown"
-            self.status.set_text(message)
+            if self.status.get_text() != message:
+                self.status.set_text(message)
             self._rendered_revision = self.cache.revision
             self._render_pending = False
-            self._reveal_pending = True
             self.grid.show_all()
-            if selected_widget is not None:
+            selection_changed = selected_widget != self._focus_target
+            restore_focus = (
+                selected_widget is not None
+                and focused_before == selected_widget
+                and self.window.get_focus() != selected_widget
+            )
+            self._focus_target = selected_widget
+            if selected_widget is not None and (selection_changed or restore_focus):
                 selected_widget.grab_focus()
-            self._queue_reveal()
+            if selection_changed or layout_changed:
+                self._reveal_pending = True
+                self._queue_reveal()
+
+        @staticmethod
+        def _attach(grid, widget, column, row):
+            parent = widget.get_parent()
+            if parent != grid:
+                if parent is not None:
+                    parent.remove(widget)
+                grid.attach(widget, column, row, 1, 1)
+                return True
+            changed = False
+            for name, value in (("left-attach", column), ("top-attach", row)):
+                if grid.child_get_property(widget, name) != value:
+                    grid.child_set_property(widget, name, value)
+                    changed = True
+            return changed
 
         def _queue_reveal(self, *_args):
             if self._reveal_pending and not self._reveal_source:
@@ -528,40 +609,18 @@ def build_application(native, *, previews: bool = True):
             card = Gtk.Button()
             card.set_hexpand(True)
             card.get_style_context().add_class("window-card")
+            image = self._fill_card(card, window)
+            card.connect("clicked", self._card_clicked, window.id)
+            return CardWidgets(
+                card, image, window, self.overview.previews.get(window.id)
+            )
+
+        def _fill_card(self, card, window):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             card.add(box)
             image = Gtk.Image()
             image.set_size_request(160, 100)
-            preview = self.overview.previews.get(window.id)
-            if preview:
-                pixbuf = native.GdkPixbuf.Pixbuf.new_from_bytes(
-                    GLib.Bytes.new(preview.pixels),
-                    native.GdkPixbuf.Colorspace.RGB,
-                    False,
-                    8,
-                    preview.width,
-                    preview.height,
-                    preview.width * 3,
-                )
-                scale = min(1, 192 / preview.width, 120 / preview.height)
-                image.set_from_pixbuf(
-                    pixbuf.scale_simple(
-                        max(1, int(preview.width * scale)),
-                        max(1, int(preview.height * scale)),
-                        native.GdkPixbuf.InterpType.BILINEAR,
-                    )
-                )
-            else:
-                try:
-                    icon = self.backend.icon(window.id)
-                except BackendError:
-                    icon = None
-                if icon:
-                    image.set_from_pixbuf(
-                        icon.scale_simple(48, 48, native.GdkPixbuf.InterpType.BILINEAR)
-                    )
-                else:
-                    image.set_from_icon_name(window.icon_name, Gtk.IconSize.DIALOG)
+            self._update_image(image, window, self.overview.previews.get(window.id))
             thumbnail = Gtk.Overlay()
             thumbnail.add(image)
             states = []
@@ -608,8 +667,38 @@ def build_application(native, *, previews: bool = True):
                 flags.append("all workspaces")
             box.pack_start(Gtk.Label(label=" · ".join(flags)), False, False, 0)
             card.set_tooltip_text("\n".join([window.title, *(s[2] for s in states)]))
-            card.connect("clicked", self._card_clicked, window.id)
-            return card
+            return image
+
+        def _update_image(self, image, window, preview):
+            if preview:
+                pixbuf = native.GdkPixbuf.Pixbuf.new_from_bytes(
+                    GLib.Bytes.new(preview.pixels),
+                    native.GdkPixbuf.Colorspace.RGB,
+                    False,
+                    8,
+                    preview.width,
+                    preview.height,
+                    preview.width * 3,
+                )
+                scale = min(1, 192 / preview.width, 120 / preview.height)
+                image.set_from_pixbuf(
+                    pixbuf.scale_simple(
+                        max(1, int(preview.width * scale)),
+                        max(1, int(preview.height * scale)),
+                        native.GdkPixbuf.InterpType.BILINEAR,
+                    )
+                )
+            else:
+                try:
+                    icon = self.backend.icon(window.id)
+                except BackendError:
+                    icon = None
+                if icon:
+                    image.set_from_pixbuf(
+                        icon.scale_simple(48, 48, native.GdkPixbuf.InterpType.BILINEAR)
+                    )
+                else:
+                    image.set_from_icon_name(window.icon_name, Gtk.IconSize.DIALOG)
 
         def _perform(self, action, *, activation=False):
             if self._busy or self.overview is None:
@@ -760,6 +849,9 @@ def build_application(native, *, previews: bool = True):
             if self.backend and self._own_xid is not None:
                 self.backend.excluded_xids.discard(self._own_xid)
             self._own_xid = None
+            self._panels.clear()
+            self._cards.clear()
+            self._focus_target = None
             self.window = None
             self.overview = None
 

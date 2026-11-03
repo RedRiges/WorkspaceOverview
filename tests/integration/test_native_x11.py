@@ -13,6 +13,7 @@ if os.environ.get("WORKSPACE_OVERVIEW_NATIVE_TESTS") != "1":
     pytest.skip("requires an isolated X11 test display", allow_module_level=True)
 
 from workspace_overview.backends.x11 import create_backend
+from workspace_overview.core.models import Preview
 from workspace_overview.native import drain_events, load_native
 from workspace_overview.ui.gtk import build_application
 
@@ -140,6 +141,9 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
         assert app.exit_status == 0
         assert app.window is not None
         settle(native, lambda: app.window.get_mapped())
+        selected_card = app._cards[xid].button
+        destroyed = []
+        selected_card.connect("destroy", lambda _: destroyed.append(True))
         own_xid = app.window.get_window().get_xid()
         assert app.overview.state.snapshot.window(own_xid) is None
         assert app.overview.state.snapshot.window(xid) is not None
@@ -154,6 +158,49 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
                 and app.backend.screen.get_active_window().get_xid() == own_xid
             ),
         )
+        # The overlay taking X11 focus changes active_window_id. It must not
+        # destroy/re-focus the selected card on the first 300ms poll.
+        app._poll()
+        assert app.overview.state.snapshot.active_window_id is None
+        assert app._cards[xid].button == selected_card
+        assert app.window.get_focus() == selected_card
+        assert not destroyed
+        focus_calls = []
+        original_grab = selected_card.grab_focus
+
+        def record_focus():
+            focus_calls.append(True)
+            original_grab()
+
+        selected_card.grab_focus = record_focus
+        try:
+            image_widget = app._cards[xid].image
+            preview = Preview(2, 1, b"\x20\x60\xa0" * 2)
+            app.cache.put(xid, app.backend.preview_identity(xid), preview)
+            app._poll()
+            assert app._cards[xid].image == image_widget
+            assert bytes(image_widget.get_pixbuf().get_pixels()) == preview.pixels
+            app._clear_previews()
+            assert app._cards[xid].image == image_widget
+            assert app._cards[xid].preview is None
+            assert app.window.get_focus() == selected_card
+            window.set_title("Updated fixture title")
+            settle(
+                native, lambda: app._cards[xid].model.title == "Updated fixture title"
+            )
+            assert "Updated fixture title" in selected_card.get_tooltip_text()
+            assert not focus_calls and not destroyed
+            assert app._cards[xid].button == selected_card
+            # A status refresh must also leave a deliberately focused toolbar
+            # button alone; periodic refresh is not a navigation command.
+            app.move_button.grab_focus()
+            app._render_pending = True
+            app._poll()
+            assert app.window.get_focus() == app.move_button
+            assert not focus_calls
+        finally:
+            selected_card.grab_focus = original_grab
+        selected_card.grab_focus()
         # Four workspaces fit on this 1280px display in one row. Increasing to
         # eight must overflow horizontally and keep the selected destination visible.
         assert all(
@@ -169,6 +216,31 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
         backend.screen.change_workspace_count(8)
         settle(native, lambda: len(app.overview.state.snapshot.workspaces) == 8)
         order = [w.id for w in app.overview.state.snapshot.workspaces]
+        assert app._cards[xid].button == selected_card
+        # An external move reparents the same button into the destination panel.
+        fixture_space = app.overview.state.snapshot.window(xid).workspace_id
+        destination = next(
+            w.id for w in backend.snapshot().workspaces if w.id != fixture_space
+        )
+        backend.move_window(xid, destination)
+        settle(native, lambda: app._cards[xid].model.workspace_id == destination)
+        assert app._cards[xid].button == selected_card
+        assert selected_card.get_parent() == app._panels[destination].cards
+        assert app._panels[fixture_space].empty.get_visible()
+        backend.move_window(xid, fixture_space)
+        settle(native, lambda: app._cards[xid].model.workspace_id == fixture_space)
+        assert not app._panels[fixture_space].empty.get_visible()
+        extra = native.Gtk.Window(title="Temporary overview fixture")
+        extra.set_accept_focus(False)
+        extra.show_all()
+        extra_xid = extra.get_window().get_xid()
+        try:
+            settle(native, lambda: extra_xid in app._cards)
+            assert app._cards[xid].button == selected_card
+        finally:
+            extra.destroy()
+        settle(native, lambda: extra_xid not in app._cards)
+        assert not destroyed
 
         def selection_visible():
             panel = app._selected_panel
