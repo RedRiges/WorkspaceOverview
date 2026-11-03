@@ -2,9 +2,10 @@
 
 lightweight, keyboard-first workspace overview for Xfce on X11
 
-**Experimental branch: `experiment/ram-preview-cache`.** The overview now stays
-running after its window closes and collects bounded thumbnails in RAM. Stop it
-with `./scripts/run-x11 --quit` before changing branches or updating this checkout.
+**The default version on `master` includes the resident RAM preview cache.**
+The overview stays running after its window closes and collects bounded thumbnails
+in RAM. Stop it with `./scripts/run-x11 --quit` before changing branches or
+updating this checkout.
 No autostart entry or system service is installed.
 
 **The default layout on `master` is a single horizontal row.** The row fits the
@@ -14,17 +15,19 @@ Cards keep a readable minimum size, and windows within each workspace can still
 occupy several rows. The previous workspace grid is preserved on
 `layout/workspace-grid`.
 
-To use the default layout after closing the overview:
+To use the default version, stop the resident before switching branches:
 
 ```bash
+./scripts/run-x11 --quit
 git fetch origin
 git switch master
 git pull --ff-only
 ./scripts/run-x11
 ```
 
-To try the previous grid, run `git switch layout/workspace-grid` and relaunch the
-overview. Switch back with `git switch master`.
+To try the previous grid, stop the resident with `./scripts/run-x11 --quit`,
+run `git switch layout/workspace-grid` and relaunch the overview. Switch back
+with `git switch master` after closing the grid version.
 
 Workspace Overview aims to make it easy to find, activate, and move windows across workspaces—including windows hidden behind fullscreen applications. Inspired by the overview experience of macOS Mission Control, it is designed to fit naturally into Xfce rather than replace its window manager
 
@@ -177,15 +180,11 @@ in-process measurements: they exclude shortcut dispatch and launcher startup,
 and a GTK paint is not a measurement of the compositor presenting a frame. The
 measurements contain no window titles or images and are not written to files.
 
-### Experimental RAM preview cache
+### RAM preview cache
 
-After closing the old version, switch to this branch:
-
-```bash
-git fetch origin
-git switch experiment/ram-preview-cache
-./scripts/run-x11
-```
+The resident cache is enabled by default on `master`. The development branch
+`experiment/ram-preview-cache` is retained with the tested version. To migrate
+from it, use the stop/switch/update commands above.
 
 Visit the workspaces normally and allow a moment for their windows to be captured.
 Reopening the overview shows the most recently captured thumbnails of windows
@@ -243,8 +242,7 @@ and the overview uses icons; unsupported lockers do not provide a reliable signa
 for this implementation. D-Bus command output requires GLib 2.80 or newer.
 
 Stop with `--quit` **before updating or switching branches**, since an already
-running Python process continues using its loaded code. `master` keeps the
-non-resident version until this experiment is accepted. Ctrl+C in the launching
+running Python process continues using its loaded code. Ctrl+C in the launching
 terminal or SIGTERM also shuts down the resident and releases its cache.
 
 ### First real-session checks
