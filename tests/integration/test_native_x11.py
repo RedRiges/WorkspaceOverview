@@ -78,16 +78,26 @@ def session():
         native, lambda: native.GdkX11.x11_get_server_time(window.get_window())
     )
     expected_manager = os.environ.get("WORKSPACE_OVERVIEW_TEST_WM", "Openbox")
+    desktop = None
 
     def manager_ready():
         backend.screen.force_update()
         return backend.screen.get_window_manager_name() == expected_manager
 
     try:
-        settle(native, manager_ready, timeout=35)
+        settle(native, manager_ready, timeout=10)
+        if expected_manager == "Xfwm4":
+            # Xfwm4 4.18 skips stack publication with only one client. A real
+            # desktop-like window gives this empty Xvfb server a second client,
+            # as xfdesktop would in an ordinary Xfce session.
+            desktop = native.Gtk.Window(title="Isolated Xfce desktop fixture")
+            desktop.set_type_hint(native.Gdk.WindowTypeHint.DESKTOP)
+            desktop.set_accept_focus(False)
+            desktop.set_default_size(64, 64)
+            desktop.show_all()
         window.show_all()
         xid = window.get_window().get_xid()
-        settle(native, lambda: backend.snapshot().window(xid) is not None, timeout=35)
+        settle(native, lambda: backend.snapshot().window(xid) is not None)
     except AssertionError:
         print("Window manager:", backend.screen.get_window_manager_name())
         print(
@@ -119,12 +129,16 @@ def session():
             connection.close()
             backend.close()
             window.destroy()
+            if desktop is not None:
+                desktop.destroy()
         raise
     try:
         yield native, window, backend, xid
     finally:
         backend.close()
         window.destroy()
+        if desktop is not None:
+            desktop.destroy()
         drain_events(native)
 
 

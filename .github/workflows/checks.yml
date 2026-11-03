@@ -19,7 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-gi python3-xlib python3-pytest \
-            gir1.2-gtk-3.0 gir1.2-wnck-3.0 xvfb openbox xfwm4 xcompmgr dbus-x11 gdb
+            gir1.2-gtk-3.0 gir1.2-wnck-3.0 xvfb openbox xfwm4 xcompmgr dbus-x11
       - name: Core and adapter tests
         run: PYTHONPATH=src /usr/bin/python3 -m pytest -q tests
       - name: Real X11 and GTK integration
@@ -48,8 +48,5 @@ jobs:
             wm_pid=$!
             trap "kill $wm_pid 2>/dev/null || true" EXIT
             sleep 2
-            PYTHONPATH=src WORKSPACE_OVERVIEW_NATIVE_TESTS=1 /usr/bin/python3 -m pytest -q -rP tests/integration/test_native_x11.py::test_real_modal_focus_redirect_confirms_parent_activation || {
-              sudo gdb -batch -ex "thread apply all bt" -p "$wm_pid" || true
-              exit 1
-            }
+            PYTHONPATH=src WORKSPACE_OVERVIEW_NATIVE_TESTS=1 /usr/bin/python3 -m pytest -q -rP tests/integration/test_native_x11.py::test_real_modal_focus_redirect_confirms_parent_activation
           '
