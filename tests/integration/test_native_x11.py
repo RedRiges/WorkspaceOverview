@@ -74,12 +74,42 @@ def session():
     window.add_events(native.Gdk.EventMask.PROPERTY_CHANGE_MASK)
     window.set_default_size(320, 180)
     window.add(native.Gtk.Label(label="Real X11 test window"))
-    window.show_all()
     backend = create_backend(
         native, lambda: native.GdkX11.x11_get_server_time(window.get_window())
     )
-    xid = window.get_window().get_xid()
-    settle(native, lambda: backend.snapshot().window(xid) is not None)
+    expected_manager = os.environ.get("WORKSPACE_OVERVIEW_TEST_WM", "Openbox")
+
+    def manager_ready():
+        backend.screen.force_update()
+        return backend.screen.get_window_manager_name() == expected_manager
+
+    try:
+        settle(native, manager_ready, timeout=35)
+        window.show_all()
+        xid = window.get_window().get_xid()
+        settle(native, lambda: backend.snapshot().window(xid) is not None, timeout=35)
+    except AssertionError:
+        print("Window manager:", backend.screen.get_window_manager_name())
+        print(
+            "Native windows:",
+            [(w.get_xid(), w.get_name()) for w in backend.screen.get_windows()],
+        )
+        from Xlib import display
+
+        connection = display.Display()
+        try:
+            print(
+                "Root children:",
+                [
+                    (w.id, w.get_wm_name(), w.get_attributes().map_state)
+                    for w in connection.screen().root.query_tree().children
+                ],
+            )
+        finally:
+            connection.close()
+            backend.close()
+            window.destroy()
+        raise
     try:
         yield native, window, backend, xid
     finally:

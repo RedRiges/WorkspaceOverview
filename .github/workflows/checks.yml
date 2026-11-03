@@ -40,6 +40,8 @@ jobs:
           '
       - name: Xfwm4 modal focus redirection
         if: matrix.compositor == true
+        env:
+          WORKSPACE_OVERVIEW_TEST_WM: Xfwm4
         run: |
           dbus-run-session -- xvfb-run -a -s '-screen 0 1280x800x24 +extension Composite' sh -eu -c '
             xfwm4 --compositor=off --sm-client-disable &
