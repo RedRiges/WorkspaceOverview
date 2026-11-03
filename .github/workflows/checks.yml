@@ -36,5 +36,5 @@ jobs:
             fi
             trap "kill $wm_pid $compositor_pid 2>/dev/null || true" EXIT
             sleep 2
-            PYTHONPATH=src WORKSPACE_OVERVIEW_NATIVE_TESTS=1 /usr/bin/python3 -m pytest -q tests/integration
+            PYTHONPATH=src WORKSPACE_OVERVIEW_NATIVE_TESTS=1 /usr/bin/python3 -m pytest -q -rP tests/integration
           '

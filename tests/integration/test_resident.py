@@ -24,3 +24,4 @@ def test_resident_ram_cache_lifecycle():
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    print(result.stdout)

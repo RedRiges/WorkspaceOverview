@@ -6,9 +6,11 @@ lock the host screen. Only this driver's own fixture windows are manipulated.
 
 import os
 import signal
+import statistics
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from workspace_overview.backends.x11 import create_backend
 from workspace_overview.native import drain_events, load_native
@@ -17,6 +19,7 @@ from workspace_overview.native import drain_events, load_native
 def main():
     native = load_native()
     Gio, GLib = native.Gio, native.GLib
+    launcher = str(Path(__file__).resolve().parents[2] / "scripts" / "run-x11")
 
     def settle(condition, timeout=6):
         deadline = time.monotonic() + timeout
@@ -27,9 +30,11 @@ def main():
             time.sleep(0.02)
         raise AssertionError("Resident condition timed out")
 
-    def command(*args):
+    def command(*args, python=False):
         process = subprocess.Popen(
-            [sys.executable, "-m", "workspace_overview", *args],
+            [sys.executable, "-m", "workspace_overview", *args]
+            if python
+            else [launcher, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -103,7 +108,7 @@ def main():
     # Moving a fixture uses no timestamp and must not change the active workspace.
     other = next(w.id for w in before.workspaces if w.id != before.active_workspace_id)
     primary = subprocess.Popen(
-        [sys.executable, "-m", "workspace_overview", "--background"],
+        [launcher, "--background"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -136,6 +141,25 @@ def main():
         assert primary.poll() is None
         if composited:
             assert "1 images" in command("--status")
+        timings = {"python": [], "fast": []}
+        for _ in range(5):
+            for route in timings:
+                started = time.perf_counter()
+                command(python=route == "python")
+                settle(has_overview)
+                timings[route].append((time.perf_counter() - started) * 1000)
+                command()
+                settle(lambda: not has_overview())
+        print(
+            "Launch-to-mapped median (ms): "
+            + "; ".join(
+                f"{route}={statistics.median(values):.1f}"
+                for route, values in timings.items()
+            )
+        )
+        status = command("--status")
+        assert "first-draw=" in status, status
+        print(status)
         window.destroy()
         settle(lambda: "0 images" in command("--status"))
         window = native.Gtk.Window(title="New RAM cache fixture")
@@ -175,12 +199,13 @@ def main():
         assert not has_owner("io.github.redriges.WorkspaceOverview")
         # A terminal interrupt must stop the resident, not leave a hidden process.
         primary = subprocess.Popen(
-            [sys.executable, "-m", "workspace_overview", "--background"],
+            [launcher],  # No resident: the same hotkey script must start Python.
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
         settle(lambda: has_owner("io.github.redriges.WorkspaceOverview"))
+        settle(has_overview)
         settle(lambda: expected in command("--status"))
         primary.send_signal(signal.SIGINT)
         settle(lambda: primary.poll() is not None)

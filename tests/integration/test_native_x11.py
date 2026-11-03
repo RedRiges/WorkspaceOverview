@@ -129,8 +129,14 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
     original_workspace_count = len(backend.snapshot().workspaces)
     app = build_application(native)
     assert app.register(None)
+    # A hotkey arriving during a sampler's event pump must be queued, not lost.
+    app._busy = True
     app.activate()
+    assert app.window is None
+    app._busy = False
+    app._finish_pending()
     try:
+        settle(native, lambda: app.window is not None)
         assert app.exit_status == 0
         assert app.window is not None
         settle(native, lambda: app.window.get_mapped())

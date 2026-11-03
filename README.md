@@ -161,6 +161,20 @@ to collect thumbnails. The first terminal launch therefore remains running;
 subsequent commands are forwarded to that instance. No daemon or autostart entry
 is installed.
 
+With no arguments, `scripts/run-x11` uses `gdbus` to activate an existing resident
+directly, avoiding another Python/GTK startup on each hotkey press. If no resident
+exists or `gdbus` is unavailable, it starts Python as before. Options such as
+`--background`, `--quit` and `--status` retain their normal behavior. Once an
+activation is sent, a timeout is reported without automatically toggling again.
+
+For opening-delay diagnostics, open the overview a few times and run
+`./scripts/run-x11 --status` in another terminal. It reports the last opening's
+setup, window discovery, widget construction and show-request times, plus the
+time to the first GTK draw and the last/maximum sampling duration. These are
+in-process measurements: they exclude shortcut dispatch and launcher startup,
+and a GTK draw is not a measurement of the compositor presenting a frame. The
+measurements contain no window titles or images and are not written to files.
+
 ### Experimental RAM preview cache
 
 After closing the old version, switch to this branch:

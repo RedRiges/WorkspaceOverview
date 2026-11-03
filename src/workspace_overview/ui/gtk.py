@@ -2,6 +2,7 @@
 
 import signal
 import sys
+import time
 
 from workspace_overview.backends.x11 import create_backend
 from workspace_overview.cli import parse_args
@@ -76,6 +77,12 @@ def build_application(native, *, previews: bool = True):
             self._stop_requested = False
             self._capture_error = False
             self._signal_sources = {}
+            self._toggle_pending = False
+            self._toggle_source = 0
+            self._opening_started = None
+            self._open_timings = {}
+            self._sampling_ms = 0.0
+            self._sampling_max_ms = 0.0
             self.exit_status = 0
 
         def do_command_line(self, command):
@@ -156,11 +163,21 @@ def build_application(native, *, previews: bool = True):
                 state = "paused (window discovery unavailable)"
             else:
                 state = "active"
-            return (
+            result = (
                 f"Background capture: {state}\n"
                 f"RAM cache: {len(self.cache.images)} images; "
                 f"{self.cache.bytes_used} / {self.cache.max_bytes} bytes"
             )
+            if self._open_timings:
+                result += "\nLast open (ms): " + "; ".join(
+                    f"{name}={duration:.1f}"
+                    for name, duration in self._open_timings.items()
+                )
+            result += (
+                f"\nBackground sampling (ms): last={self._sampling_ms:.1f}; "
+                f"max={self._sampling_max_ms:.1f}"
+            )
+            return result
 
         def _clear_previews(self):
             self.cache.clear()
@@ -182,6 +199,7 @@ def build_application(native, *, previews: bool = True):
             if self._busy or self.backend is None:
                 return True
             self._busy = True
+            started = time.perf_counter()
             try:
                 snapshot = self.backend.snapshot()
                 self.sampler.sample(snapshot, only_missing=self.overview is not None)
@@ -190,6 +208,8 @@ def build_application(native, *, previews: bool = True):
                 self.cache.clear()
                 self._capture_error = True
             finally:
+                self._sampling_ms = (time.perf_counter() - started) * 1000
+                self._sampling_max_ms = max(self._sampling_max_ms, self._sampling_ms)
                 self._busy = False
             self._finish_pending()
             return self.backend is not None
@@ -199,30 +219,53 @@ def build_application(native, *, previews: bool = True):
                 self.stop()
             elif self._close_requested:
                 self._close()
+            elif self._toggle_pending and not self._toggle_source:
+                self._toggle_source = GLib.idle_add(self._dispatch_toggle)
+
+        def _dispatch_toggle(self):
+            self._toggle_source = 0
+            if self._toggle_pending:
+                self._toggle_pending = False
+                self.activate()
+            return False
 
         def do_activate(self):
             if self._busy:
-                self._close_requested = True
+                self._toggle_pending = not self._toggle_pending
                 return
             if self.window is not None:
                 self._close()
                 return
             self._busy = True
+            self._opening_started = time.perf_counter()
+            self._open_timings = {}
             try:
+                stage = self._opening_started
                 self._ensure_resident()
                 if self.guard.state == "locked":
+                    self._opening_started = None
                     return
                 self._close_requested = False
                 self._create_window()
+                now = time.perf_counter()
+                self._open_timings["setup"] = (now - stage) * 1000
+                stage = now
                 self._own_xid = self.window.get_window().get_xid()
                 self.backend.excluded_xids.add(self._own_xid)
                 self.overview = Overview(self.backend, previews=self.cache.images)
                 if not self.overview.open():
                     raise BackendError(self.overview.state.error)
                 self.sampler.reconcile(self.overview.state.snapshot)
+                now = time.perf_counter()
+                self._open_timings["snapshot"] = (now - stage) * 1000
+                stage = now
                 self._render()
+                now = time.perf_counter()
+                self._open_timings["widgets"] = (now - stage) * 1000
+                stage = now
                 self.window.show_all()
                 self.window.present_with_time(self._timestamp())
+                self._open_timings["show"] = (time.perf_counter() - stage) * 1000
                 self._timer = GLib.timeout_add(300, self._poll)
             except BackendError as exc:
                 print(f"workspace-overview: {exc}", file=sys.stderr)
@@ -233,6 +276,14 @@ def build_application(native, *, previews: bool = True):
             finally:
                 self._busy = False
             self._finish_pending()
+
+        def _first_draw(self, *_args):
+            if self._opening_started is not None:
+                self._open_timings["first-draw"] = (
+                    time.perf_counter() - self._opening_started
+                ) * 1000
+                self._opening_started = None
+            return False
 
         def _timestamp(self):
             if self._event_time:
@@ -269,6 +320,7 @@ def build_application(native, *, previews: bool = True):
             self.window.connect("key-press-event", self._key)
             self.window.connect("delete-event", self._delete)
             self.window.connect("destroy", self._destroyed)
+            self.window.connect_after("draw", self._first_draw)
             self._css = Gtk.CssProvider()
             self._css.load_from_data(CSS)
             Gtk.StyleContext.add_provider_for_screen(
@@ -659,6 +711,7 @@ def build_application(native, *, previews: bool = True):
             return True
 
         def _close(self):
+            self._toggle_pending = False
             if self._busy:
                 self._close_requested = True
             elif self.window is not None:
@@ -666,6 +719,7 @@ def build_application(native, *, previews: bool = True):
                 self.window.destroy()
 
         def _destroyed(self, *_args):
+            self._opening_started = None
             self._reveal_pending = False
             self._selected_panel = None
             if self._reveal_source:
@@ -699,6 +753,10 @@ def build_application(native, *, previews: bool = True):
             self.quit()
 
         def _dispose_resident(self):
+            self._toggle_pending = False
+            if self._toggle_source:
+                GLib.source_remove(self._toggle_source)
+                self._toggle_source = 0
             for source in self._signal_sources.values():
                 GLib.source_remove(source)
             self._signal_sources.clear()

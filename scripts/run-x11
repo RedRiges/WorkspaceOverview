@@ -1,6 +1,20 @@
 #!/bin/sh
 # Use the distribution interpreter so its GI typelibs and Python bindings match.
 set -eu
+# A hotkey should only notify the resident, not reload Python/GTK. Query the bus
+# daemon first: after sending Activate, never retry a timeout as a second toggle.
+if [ "$#" -eq 0 ] && [ -n "${DISPLAY:-}" ] && command -v gdbus >/dev/null 2>&1; then
+    overview_owner=$(gdbus call --session --timeout 2 \
+        --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.NameHasOwner \
+        io.github.redriges.WorkspaceOverview 2>/dev/null) || overview_owner=""
+    if [ "$overview_owner" = "(true,)" ]; then
+        exec gdbus call --session --timeout 5 \
+            --dest io.github.redriges.WorkspaceOverview \
+            --object-path /io/github/redriges/WorkspaceOverview \
+            --method org.freedesktop.Application.Activate '{}' >/dev/null
+    fi
+fi
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
 exec /usr/bin/python3 -m workspace_overview "$@"
