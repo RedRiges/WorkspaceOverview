@@ -69,6 +69,12 @@ class MockBackend:
             raise BackendError(f"Window {window_id} no longer exists")
         return window
 
+    def _checked_window(self, window_id, expected_lifetime):
+        window = self._window(window_id)
+        if expected_lifetime is not None and window.lifetime is not expected_lifetime:
+            raise BackendError("The requested window was replaced; select it again")
+        return window
+
     def snapshot(self) -> Snapshot:
         self._check_failure("snapshot")
         return self._snapshot
@@ -91,9 +97,11 @@ class MockBackend:
             active_window_id=None if active == window_id else active,
         )
 
-    def activate_window(self, window_id: int) -> None:
+    def activate_window(
+        self, window_id: int, *, expected_lifetime: object | None = None
+    ) -> None:
         self._check_failure("activate")
-        window = self._window(window_id)
+        window = self._checked_window(window_id, expected_lifetime)
         self._snapshot = replace(
             self._snapshot,
             windows=tuple(
@@ -105,9 +113,15 @@ class MockBackend:
         )
         self.actions.append(Action("activate", window_id))
 
-    def move_window(self, window_id: int, workspace_id: int) -> None:
+    def move_window(
+        self,
+        window_id: int,
+        workspace_id: int,
+        *,
+        expected_lifetime: object | None = None,
+    ) -> None:
         self._check_failure("move")
-        if self._window(window_id).pinned:
+        if self._checked_window(window_id, expected_lifetime).pinned:
             raise BackendError(
                 "Unpin this window in the window manager before moving it"
             )

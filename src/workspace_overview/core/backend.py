@@ -15,15 +15,25 @@ class Backend(Protocol):
     Mutating methods return once the adapter can provide a refreshed snapshot.
     The X11 adapter settles requests with a bounded timeout before returning.
     Expected failures raise BackendError; they never imply confirmed success.
+    Pass the selected snapshot window's lifetime to mutating operations; adapters
+    must revalidate it after processing events and before sending requests.
     """
 
     def snapshot(self) -> Snapshot: ...
 
-    def activate_window(self, window_id: int) -> None:
+    def activate_window(
+        self, window_id: int, *, expected_lifetime: object | None = None
+    ) -> None:
         """Activate/unminimize a window, switching workspace if necessary."""
         ...
 
-    def move_window(self, window_id: int, workspace_id: int) -> None:
+    def move_window(
+        self,
+        window_id: int,
+        workspace_id: int,
+        *,
+        expected_lifetime: object | None = None,
+    ) -> None:
         """Move without switching the active workspace or activating a window."""
         ...
 

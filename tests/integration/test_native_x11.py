@@ -295,3 +295,29 @@ def test_real_gtk_overview_excludes_itself_and_activates_card(session):
             native,
             lambda: len(backend.snapshot().workspaces) == original_workspace_count,
         )
+
+
+def test_real_modal_focus_redirect_confirms_parent_activation(session):
+    from workspace_overview.core.overview import Overview
+
+    native, window, backend, xid = session
+    dialog = native.Gtk.Dialog(
+        title="Modal activation fixture", transient_for=window, modal=True
+    )
+    dialog.add_button("Close", native.Gtk.ResponseType.CLOSE)
+    dialog.show_all()
+    dialog_id = dialog.get_window().get_xid()
+    try:
+        settle(native, lambda: backend.snapshot().window(dialog_id) is not None)
+        settle(
+            native, lambda: backend.snapshot().window(dialog_id).transient_for == xid
+        )
+        overview = Overview(backend)
+        assert overview.open()
+        assert overview.select_window(xid)
+        assert overview.activate_selected(), overview.state.error
+        assert not overview.state.is_open
+        assert overview.state.snapshot.active_window_id == dialog_id
+    finally:
+        dialog.destroy()
+        drain_events(native)

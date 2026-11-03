@@ -30,6 +30,10 @@ class NativeWindow:
         self.kind, self.pinned = kind, pinned
         self.minimized, self.fullscreen, self.ignore = False, False, False
         self.maximized = False
+        self.transient = None
+
+    def get_transient(self):
+        return self.transient
 
     def get_xid(self):
         return self.xid
@@ -236,4 +240,54 @@ def test_preview_identity_uses_tokens_without_retaining_native_windows(adapter):
     assert backend.preview_identity(1) is not first
     backend.close()
     assert not screen.handlers
-    assert not backend._preview_identities
+    assert not backend._window_lifetimes
+
+
+@pytest.mark.parametrize("action", ["activate", "move"])
+@pytest.mark.parametrize("reuse_on_pump", [1, 2])
+def test_actions_recheck_lifetime_after_event_dispatch(adapter, action, reuse_on_pump):
+    screen, backend = adapter
+    original = screen.windows[0]
+    original.space = screen.spaces[2]
+    before = backend.snapshot()
+    lifetime = before.window(1).lifetime
+    replacement = NativeWindow(screen, 1, screen.spaces[0])
+    calls = []
+    replacement.activate = lambda timestamp: calls.append("activate")
+    replacement.move_to_workspace = lambda workspace: calls.append("move")
+    pumps = 0
+
+    def pump():
+        nonlocal pumps
+        pumps += 1
+        if pumps == reuse_on_pump:
+            screen.close_window(original)
+            screen.windows.append(replacement)
+
+    backend._pump = pump
+    with pytest.raises(BackendError, match="replaced"):
+        if action == "activate":
+            backend.activate_window(1, expected_lifetime=lifetime)
+        else:
+            backend.move_window(1, before.workspaces[1].id, expected_lifetime=lifetime)
+    assert not calls
+    assert replacement.space is screen.spaces[0]
+
+
+@pytest.mark.parametrize("related", [True, False])
+def test_adapter_accepts_focus_redirected_to_related_dialog(adapter, related):
+    screen, backend = adapter
+    parent = screen.windows[0]
+    dialog = NativeWindow(screen, 2, screen.spaces[0], kind="DIALOG")
+    dialog.transient = parent if related else None
+    screen.windows.append(dialog)
+    parent.activate = lambda timestamp: setattr(screen, "active_window", dialog)
+    if related:
+        backend.activate_window(1)
+        snapshot = backend.snapshot()
+        assert snapshot.active_window_id == 2
+        assert snapshot.window(2).transient_for == 1
+        assert snapshot.activation_matches(1, snapshot.window(1).lifetime)
+    else:
+        with pytest.raises(BackendError, match="refused"):
+            backend.activate_window(1)

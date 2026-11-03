@@ -14,6 +14,7 @@ class Move:
     window_id: int
     source_workspace_id: int
     destination_workspace_id: int
+    lifetime: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class OverviewState:
     selected_window_id: int | None = None
     move: Move | None = None
     error: str | None = None
+    selection_invalidated: bool = False
 
 
 class Overview:
@@ -40,6 +42,7 @@ class Overview:
         self._backend = backend
         self._state = OverviewState()
         self._previews: dict[int, Preview | None] = {}
+        self._preview_lifetimes: dict[int, object] = {}
         self._shared_previews = previews
 
     @property
@@ -69,8 +72,10 @@ class Overview:
         ids = {window.id for window in self.state.snapshot.windows}
         for removed in self._previews.keys() - ids:
             del self._previews[removed]
+            self._preview_lifetimes.pop(removed, None)
         for window in self.state.snapshot.windows:
-            if window.id not in self._previews:
+            if self._preview_lifetimes.get(window.id) is not window.lifetime:
+                self._preview_lifetimes[window.id] = window.lifetime
                 try:
                     self._previews[window.id] = self._backend.capture_preview(window.id)
                 except BackendError:
@@ -96,6 +101,7 @@ class Overview:
 
     def close(self) -> None:
         self._previews.clear()
+        self._preview_lifetimes.clear()
         self._state = replace(self.state, is_open=False, move=None, error=None)
 
     def toggle(self) -> bool:
@@ -116,15 +122,30 @@ class Overview:
         if workspace_id not in workspace_ids:
             workspace_id = snapshot.active_workspace_id
         window_id = self.state.selected_window_id
-        if not any(w.id == window_id for w in snapshot.windows_on(workspace_id)):
+        previous = self.state.snapshot.window(window_id)
+        current = snapshot.window(window_id)
+        invalidated = self.state.selection_invalidated
+        error = self.state.error
+        if (
+            previous is not None
+            and current is not None
+            and current.lifetime is not previous.lifetime
+        ):
+            window_id = None
+            invalidated = True
+            error = "The selected window was replaced; select it again"
+        elif not invalidated and not any(
+            w.id == window_id for w in snapshot.windows_on(workspace_id)
+        ):
             window_id = self._initial_window(snapshot, workspace_id)
         move = self.state.move
-        error = self.state.error
         if move is not None:
             move_error = None
             source = snapshot.window(move.window_id)
             if source is None:
                 move_error = "The window being moved no longer exists"
+            elif source.lifetime is not move.lifetime:
+                move_error = "The window being moved was replaced; select it again"
             elif source.workspace_id != move.source_workspace_id:
                 move_error = (
                     "The window was moved externally; select a destination again"
@@ -139,6 +160,7 @@ class Overview:
             snapshot=snapshot,
             selected_workspace_id=workspace_id,
             selected_window_id=window_id,
+            selection_invalidated=invalidated,
             move=move,
             error=error,
         )
@@ -150,10 +172,14 @@ class Overview:
             return False
         if not any(w.id == workspace_id for w in self.state.snapshot.workspaces):
             return False
-        if workspace_id != self.state.selected_workspace_id:
+        if (
+            workspace_id != self.state.selected_workspace_id
+            or self.state.selection_invalidated
+        ):
             self._state = replace(
                 self.state,
                 selected_workspace_id=workspace_id,
+                selection_invalidated=False,
                 selected_window_id=self._initial_window(
                     self.state.snapshot, workspace_id
                 ),
@@ -182,6 +208,7 @@ class Overview:
             self.state,
             selected_workspace_id=window.workspace_id,
             selected_window_id=window.id,
+            selection_invalidated=False,
             error=None,
         )
         return True
@@ -215,6 +242,8 @@ class Overview:
         source_index = 0
         if windows:
             ids = [w.id for w in windows]
+            if self.state.selected_window_id not in ids:
+                return self.select_window(ids[0])
             source_index = ids.index(self.state.selected_window_id)
             index = grid_neighbor(source_index, len(ids), columns, direction)
             if index != source_index or workspace_columns is None:
@@ -239,11 +268,14 @@ class Overview:
         if not self.state.is_open or self.state.move is not None:
             return False
         window_id = self.state.selected_window_id
-        if window_id is None or not self.refresh():
+        intended = self.state.snapshot.window(window_id)
+        if intended is None or not self.refresh():
             return False
         window = self.state.snapshot.window(window_id)
         if window is None:
             return self._error("The selected window no longer exists")
+        if window.lifetime is not intended.lifetime:
+            return self._error("The selected window was replaced; select it again")
         if window.pinned:
             return self._error(
                 "Unpin this window in the window manager before moving it"
@@ -252,7 +284,9 @@ class Overview:
             self.state,
             selected_workspace_id=window.workspace_id,
             selected_window_id=window.id,
-            move=Move(window.id, window.workspace_id, window.workspace_id),
+            move=Move(
+                window.id, window.workspace_id, window.workspace_id, window.lifetime
+            ),
             error=None,
         )
         return True
@@ -282,7 +316,11 @@ class Overview:
             return False
         previous_active = self.state.snapshot.active_workspace_id
         try:
-            self._backend.move_window(move.window_id, move.destination_workspace_id)
+            self._backend.move_window(
+                move.window_id,
+                move.destination_workspace_id,
+                expected_lifetime=move.lifetime,
+            )
         except BackendError as exc:
             return self._action_failed(str(exc))
         # The move is no longer pending; don't treat our own change as external.
@@ -290,7 +328,11 @@ class Overview:
         if not self.refresh():
             return False
         window = self.state.snapshot.window(move.window_id)
-        if window is None or window.workspace_id != move.destination_workspace_id:
+        if (
+            window is None
+            or window.lifetime is not move.lifetime
+            or window.workspace_id != move.destination_workspace_id
+        ):
             return self._error("The backend did not confirm the requested move")
         if self.state.snapshot.active_workspace_id != previous_active:
             return self._error("The backend unexpectedly switched the active workspace")
@@ -305,17 +347,23 @@ class Overview:
         if not self.state.is_open or self.state.move is not None:
             return False
         window_id = self.state.selected_window_id
-        if window_id is None or not self.refresh():
+        intended = self.state.snapshot.window(window_id)
+        if intended is None or not self.refresh():
             return False
-        if self.state.snapshot.window(window_id) is None:
+        window = self.state.snapshot.window(window_id)
+        if window is None:
             return self._error("The selected window no longer exists")
+        if window.lifetime is not intended.lifetime:
+            return self._error("The selected window was replaced; select it again")
         try:
-            self._backend.activate_window(window_id)
+            self._backend.activate_window(
+                window_id, expected_lifetime=intended.lifetime
+            )
         except BackendError as exc:
             return self._action_failed(str(exc))
         if not self.refresh():
             return False
-        if self.state.snapshot.active_window_id != window_id:
+        if not self.state.snapshot.activation_matches(window_id, intended.lifetime):
             return self._error("The backend did not confirm window activation")
         self.close()
         return True

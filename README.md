@@ -390,10 +390,16 @@ Successful moves keep the overview open and select the moved window at its
 destination without changing the active workspace. Successful activation closes
 the overview. Backend failures leave it open and populate `state.error`.
 
-Call `refresh()` after external changes. Selection uses stable IDs, surviving
-reordering; removal falls back to an available window/workspace. A pending move
-is cancelled if its source disappears, moves externally, or its destination
-disappears. Mock helpers `add_window()`, `remove_window()`, `set_snapshot()`, and
+Call `refresh()` after external changes. Each snapshot window carries an opaque
+`lifetime` token that adapters preserve until the window closes. Selection survives
+reordering; removal falls back to an available window/workspace. Reuse of a selected
+XID clears selection until the user selects again. Pending moves retain the source
+lifetime and are cancelled if it is replaced, disappears, moves externally, or the
+destination disappears. Action calls pass `expected_lifetime`; the X11 adapter
+rechecks it after processing events and before sending further window requests.
+Activation is confirmed by a fresh snapshot showing focus on the same live window
+or a descendant in its `transient_for` chain, including modal dialogs. Unrelated
+focus, broken ancestry and cycles do not confirm activation. Mock helpers `add_window()`, `remove_window()`, `set_snapshot()`, and
 `fail_next("move", "Refused")` simulate these conditions.
 
 The default portable `Overview` captures once per opening and for newly discovered

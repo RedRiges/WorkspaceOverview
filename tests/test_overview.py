@@ -273,10 +273,10 @@ def test_empty_session_and_closed_commands_are_safe():
 class IgnoringBackend(MockBackend):
     """A window manager may accept a request without doing what was requested."""
 
-    def activate_window(self, window_id: int) -> None:
+    def activate_window(self, window_id: int, **kwargs) -> None:
         pass
 
-    def move_window(self, window_id: int, workspace_id: int) -> None:
+    def move_window(self, window_id: int, workspace_id: int, **kwargs) -> None:
         pass
 
 
@@ -298,8 +298,8 @@ def test_actions_require_confirmation_from_fresh_snapshot(action):
 
 def test_unexpected_workspace_switch_is_reported():
     class SwitchingBackend(MockBackend):
-        def move_window(self, window_id, workspace_id):
-            super().move_window(window_id, workspace_id)
+        def move_window(self, window_id, workspace_id, **kwargs):
+            super().move_window(window_id, workspace_id, **kwargs)
             self.activate_window(window_id)
 
     backend = SwitchingBackend(MockBackend.demo().snapshot())
@@ -315,8 +315,8 @@ def test_unexpected_workspace_switch_is_reported():
 
 def test_snapshot_failure_after_action_never_reports_success():
     class UnreadableAfterActivation(MockBackend):
-        def activate_window(self, window_id):
-            super().activate_window(window_id)
+        def activate_window(self, window_id, **kwargs):
+            super().activate_window(window_id, **kwargs)
             self.fail_next("snapshot", "Display lost after request")
 
     backend = UnreadableAfterActivation(MockBackend.demo().snapshot())
@@ -380,9 +380,9 @@ def test_preview_cache_cannot_be_changed_by_consumers(session):
 
 def test_window_disappearing_inside_action_is_reported_and_reconciled():
     class VanishingBackend(MockBackend):
-        def activate_window(self, window_id):
+        def activate_window(self, window_id, **kwargs):
             self.remove_window(window_id)
-            super().activate_window(window_id)
+            super().activate_window(window_id, **kwargs)
 
     backend = VanishingBackend(MockBackend.demo().snapshot())
     overview = Overview(backend)
@@ -468,3 +468,73 @@ def test_tab_direction_follows_display_order_with_wrap(session):
         overview.cycle_workspace(-1)
         assert overview.state.selected_workspace_id == expected
     assert not backend.actions
+
+
+@pytest.mark.parametrize("command", ["activate_selected", "begin_move", "confirm_move"])
+def test_reused_xid_cannot_inherit_an_action(session, command):
+    backend, overview = session
+    old = backend.snapshot().window(101)
+    if command == "confirm_move":
+        assert overview.begin_move()
+        assert overview.select_destination(20)
+    backend.remove_window(101)
+    backend.add_window(Window(101, old.workspace_id, old.title))
+    assert not getattr(overview, command)()
+    assert overview.state.move is None
+    assert overview.state.selected_window_id is None
+    assert "replaced" in overview.state.error
+    assert not backend.actions
+    # Passive polling must not quietly select the replacement on the next tick.
+    for _ in range(3):
+        overview.refresh()
+        assert overview.state.selected_window_id is None
+        assert not overview.enter()
+    assert overview.select_window(101)
+    assert overview.enter()
+    assert backend.actions == [Action("activate", 101)]
+
+
+@pytest.mark.parametrize("action", ["activate", "move"])
+def test_replacement_inside_backend_action_is_rejected(action):
+    class ReplacingBackend(MockBackend):
+        def reuse(self, window_id):
+            old = self._window(window_id)
+            self.remove_window(window_id)
+            self.add_window(Window(old.id, old.workspace_id, old.title))
+
+        def activate_window(self, window_id, **kwargs):
+            self.reuse(window_id)
+            super().activate_window(window_id, **kwargs)
+
+        def move_window(self, window_id, workspace_id, **kwargs):
+            self.reuse(window_id)
+            super().move_window(window_id, workspace_id, **kwargs)
+
+    backend = ReplacingBackend(MockBackend.demo().snapshot())
+    overview = Overview(backend)
+    overview.open()
+    if action == "move":
+        overview.begin_move()
+        overview.select_destination(20)
+        assert not overview.confirm_move()
+    else:
+        assert not overview.activate_selected()
+    assert not backend.actions
+    assert "replaced" in overview.state.error
+    assert overview.state.is_open
+
+
+@pytest.mark.parametrize("related", [True, False])
+def test_activation_confirmation_accepts_only_related_transient_focus(related):
+    class RedirectingBackend(MockBackend):
+        def activate_window(self, window_id, **kwargs):
+            super().activate_window(window_id, **kwargs)
+            self._snapshot = replace(self._snapshot, active_window_id=103)
+
+    backend = RedirectingBackend(MockBackend.demo().snapshot())
+    backend.add_window(Window(103, 10, "Dialog", transient_for=101 if related else 102))
+    overview = Overview(backend)
+    overview.open()
+    assert overview.activate_selected() is related
+    assert overview.state.is_open is not related
+    assert overview.state.snapshot.active_window_id == 103

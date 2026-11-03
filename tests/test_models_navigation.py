@@ -80,3 +80,23 @@ def test_invalid_grid_input_is_rejected(index, count, columns):
 )
 def test_enter_adjacent_workspace_from_near_edge(source, count, direction, expected):
     assert grid_entry(source, count, 3, direction) == expected
+
+
+def test_activation_matches_nested_transients_and_rejects_stale_target_and_cycles():
+    from dataclasses import replace
+
+    parent = Window(1, 10, "Parent")
+    child = Window(2, 10, "Dialog", transient_for=1)
+    nested = Window(3, 10, "Nested dialog", transient_for=2)
+    snapshot = Snapshot((Workspace(10, "Work"),), (parent, child, nested), 10, 3)
+    assert snapshot.activation_matches(1, parent.lifetime)
+    assert not snapshot.activation_matches(1, object())
+    assert not replace(
+        snapshot, windows=(parent, replace(child, transient_for=3), nested)
+    ).activation_matches(1, parent.lifetime)
+    assert not replace(snapshot, windows=(parent, nested)).activation_matches(
+        1, parent.lifetime
+    )
+    assert not replace(
+        snapshot, windows=(replace(parent, minimized=True), child, nested)
+    ).activation_matches(1, parent.lifetime)

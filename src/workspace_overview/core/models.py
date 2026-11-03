@@ -1,6 +1,6 @@
 """Immutable snapshots supplied by window-system adapters."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,8 @@ class Window:
     fullscreen: bool = False
     pinned: bool = False
     maximized: bool = False
+    lifetime: object = field(default_factory=object, repr=False)
+    transient_for: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +65,25 @@ class Snapshot:
 
     def windows_on(self, workspace_id: int | None) -> tuple[Window, ...]:
         return tuple(w for w in self.windows if w.workspace_id == workspace_id)
+
+    def activation_matches(self, window_id: int, lifetime: object) -> bool:
+        """Accept focus on the same live target or its transient descendant."""
+        target = self.window(window_id)
+        if (
+            target is None
+            or target.lifetime is not lifetime
+            or target.minimized
+            or target.workspace_id != self.active_workspace_id
+        ):
+            return False
+        current = self.window(self.active_window_id)
+        visited = set()
+        while current is not None and current.id not in visited:
+            if current.id == window_id:
+                return True
+            visited.add(current.id)
+            current = self.window(current.transient_for)
+        return False
 
 
 @dataclass(frozen=True, slots=True)

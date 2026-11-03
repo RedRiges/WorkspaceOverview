@@ -36,9 +36,9 @@ class X11Backend:
         self._next_workspace_id = 0
         # Plain generation tokens must outlive a capture, not native Wnck.Window
         # wrappers: releasing those after window destruction can crash libwnck.
-        self._preview_identities: dict[int, object] = {}
-        self._preview_closed_handler = screen.connect(
-            "window-closed", self._forget_preview_identity
+        self._window_lifetimes: dict[int, object] = {}
+        self._lifetime_closed_handler = screen.connect(
+            "window-closed", self._forget_window_lifetime
         )
 
     def _update(self) -> None:
@@ -75,6 +75,9 @@ class X11Backend:
 
     def snapshot(self) -> Snapshot:
         self._update()
+        return self._snapshot_current()
+
+    def _snapshot_current(self) -> Snapshot:
         spaces = self._workspaces()
         active_space = self.screen.get_active_workspace()
         active_id = self._workspace_ids.get(active_space)
@@ -88,6 +91,7 @@ class X11Backend:
             )
             if workspace_id is None:  # A window in the middle of closing/mapping.
                 continue
+            transient = w.get_transient()
             windows.append(
                 Window(
                     id=w.get_xid(),
@@ -97,6 +101,10 @@ class X11Backend:
                     fullscreen=w.is_fullscreen(),
                     pinned=pinned,
                     maximized=w.is_maximized(),
+                    lifetime=self._window_lifetimes.setdefault(w.get_xid(), object()),
+                    transient_for=transient.get_xid()
+                    if transient is not None
+                    else None,
                 )
             )
         active = self.screen.get_active_window()
@@ -132,43 +140,60 @@ class X11Backend:
                 raise BackendError(message)
             self._sleep(0.01)
 
-    def activate_window(self, window_id: int) -> None:
+    def _checked_window(self, window_id, lifetime):
+        if self.window_lifetime(window_id) is not lifetime:
+            raise BackendError("The requested window was replaced; select it again")
+        return self._window(window_id)
+
+    def activate_window(self, window_id: int, *, expected_lifetime=None) -> None:
+        lifetime = (
+            self.window_lifetime(window_id)
+            if expected_lifetime is None
+            else expected_lifetime
+        )
         self._update()
-        window = self._window(window_id)
+        self._checked_window(window_id, lifetime)
         timestamp = self._timestamp()
         if not timestamp:
             raise BackendError("No X server event timestamp is available; try again")
+        window = self._checked_window(window_id, lifetime)
         workspace = window.get_workspace()
         if not window.is_pinned() and workspace is not None:
             if workspace != self.screen.get_active_workspace():
+                window = None  # Do not retain a Wnck.Window across event dispatch.
                 workspace.activate(timestamp)
                 self._wait(
                     lambda: self.screen.get_active_workspace() == workspace,
                     "The window manager refused to switch workspace",
                 )
-        window = self._window(window_id)
+        window = self._checked_window(window_id, lifetime)
         if window.is_minimized():
             window.unminimize(timestamp)
+        window = self._checked_window(window_id, lifetime)
         window.activate(timestamp)
+        window = None
 
         def activated() -> bool:
-            current = self._window(window_id)
-            active = self.screen.get_active_window()
-            return (
-                active is not None
-                and active.get_xid() == window_id
-                and not current.is_minimized()
-            )
+            self._checked_window(window_id, lifetime)
+            return self._snapshot_current().activation_matches(window_id, lifetime)
 
         self._wait(activated, "The window manager refused window activation")
 
-    def move_window(self, window_id: int, workspace_id: int) -> None:
+    def move_window(
+        self, window_id: int, workspace_id: int, *, expected_lifetime=None
+    ) -> None:
+        lifetime = (
+            self.window_lifetime(window_id)
+            if expected_lifetime is None
+            else expected_lifetime
+        )
         self._update()
+        self._checked_window(window_id, lifetime)
         spaces = self._workspaces()
         destination = spaces.get(workspace_id)
         if destination is None:
             raise BackendError("The destination workspace no longer exists")
-        window = self._window(window_id)
+        window = self._checked_window(window_id, lifetime)
         if window.is_pinned():
             raise BackendError(
                 "Unpin this window in the window manager before moving it"
@@ -176,8 +201,12 @@ class X11Backend:
         previous_active = self.screen.get_active_workspace()
         if window.get_workspace() != destination:
             window.move_to_workspace(destination)
+            window = None
             self._wait(
-                lambda: self._window(window_id).get_workspace() == destination,
+                lambda: (
+                    self._checked_window(window_id, lifetime).get_workspace()
+                    == destination
+                ),
                 "The window manager refused to move this window",
             )
         if self.screen.get_active_workspace() != previous_active:
@@ -187,22 +216,25 @@ class X11Backend:
         self._window(window_id)
         return self._previews.capture(window_id) if self._previews else None
 
-    def _forget_preview_identity(self, _screen, window):
-        self._preview_identities.pop(window.get_xid(), None)
+    def _forget_window_lifetime(self, _screen, window):
+        self._window_lifetimes.pop(window.get_xid(), None)
 
-    def preview_identity(self, window_id: int):
+    def window_lifetime(self, window_id: int):
         """A token per window lifetime, invalidated before an XID can be reused."""
         self._window(window_id)
-        return self._preview_identities.setdefault(window_id, object())
+        return self._window_lifetimes.setdefault(window_id, object())
+
+    def preview_identity(self, window_id: int):
+        return self.window_lifetime(window_id)
 
     def icon(self, window_id: int):
         return self._window(window_id).get_icon()
 
     def close(self) -> None:
-        if self._preview_closed_handler:
-            self.screen.disconnect(self._preview_closed_handler)
-            self._preview_closed_handler = 0
-        self._preview_identities.clear()
+        if self._lifetime_closed_handler:
+            self.screen.disconnect(self._lifetime_closed_handler)
+            self._lifetime_closed_handler = 0
+        self._window_lifetimes.clear()
         if self._previews:
             self._previews.close()
 
