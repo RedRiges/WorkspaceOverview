@@ -17,6 +17,7 @@ from workspace_overview.native import drain_events, load_native
 
 
 def main():
+    os.environ["PYTHONFAULTHANDLER"] = "1"
     native = load_native()
     Gio, GLib = native.Gio, native.GLib
     launcher = str(Path(__file__).resolve().parents[2] / "scripts" / "run-x11")
@@ -226,9 +227,9 @@ def main():
             except subprocess.TimeoutExpired:
                 primary.kill()
                 primary.wait()
-            out, err = primary.communicate()
-            if out or err:
-                print(out + err, file=sys.stderr)
+        out, err = primary.communicate()
+        if primary.returncode or out or err:
+            print(f"Resident exit: {primary.returncode}\n{out}{err}", file=sys.stderr)
         window.destroy()
         backend.close()
         if owner:
