@@ -34,6 +34,12 @@ class X11Backend:
         # increasing IDs to the core and never retarget a pending move by index.
         self._workspace_ids: dict[object, int] = {}
         self._next_workspace_id = 0
+        # Plain generation tokens must outlive a capture, not native Wnck.Window
+        # wrappers: releasing those after window destruction can crash libwnck.
+        self._preview_identities: dict[int, object] = {}
+        self._preview_closed_handler = screen.connect(
+            "window-closed", self._forget_preview_identity
+        )
 
     def _update(self) -> None:
         self._pump()
@@ -181,14 +187,22 @@ class X11Backend:
         self._window(window_id)
         return self._previews.capture(window_id) if self._previews else None
 
+    def _forget_preview_identity(self, _screen, window):
+        self._preview_identities.pop(window.get_xid(), None)
+
     def preview_identity(self, window_id: int):
-        """Native object identity prevents thumbnails surviving XID reuse."""
-        return self._window(window_id)
+        """A token per window lifetime, invalidated before an XID can be reused."""
+        self._window(window_id)
+        return self._preview_identities.setdefault(window_id, object())
 
     def icon(self, window_id: int):
         return self._window(window_id).get_icon()
 
     def close(self) -> None:
+        if self._preview_closed_handler:
+            self.screen.disconnect(self._preview_closed_handler)
+            self._preview_closed_handler = 0
+        self._preview_identities.clear()
         if self._previews:
             self._previews.close()
 

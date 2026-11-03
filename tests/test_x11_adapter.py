@@ -76,6 +76,22 @@ class Screen:
         self.active_space = self.spaces[0]
         self.windows = [NativeWindow(self, 1, self.spaces[0])]
         self.active_window = self.windows[0]
+        self.handlers = {}
+
+    def connect(self, signal, callback):
+        self.handlers[len(self.handlers) + 1] = (signal, callback)
+        return len(self.handlers)
+
+    def disconnect(self, handler):
+        del self.handlers[handler]
+
+    def close_window(self, window):
+        self.windows.remove(window)
+        if self.active_window is window:
+            self.active_window = None
+        for signal, callback in self.handlers.values():
+            if signal == "window-closed":
+                callback(self, window)
 
     def force_update(self):
         pass
@@ -200,3 +216,24 @@ def test_native_workspace_order_follows_desktop_numbers_not_enumeration(adapter)
     assert [w.name for w in first.workspaces] == ["Desktop 0", "Desktop 1", "Desktop 2"]
     screen.spaces.reverse()
     assert backend.snapshot().workspaces == first.workspaces
+
+
+def test_preview_identity_uses_tokens_without_retaining_native_windows(adapter):
+    import gc
+    import weakref
+
+    screen, backend = adapter
+    old_window = weakref.ref(screen.windows[0])
+    first = backend.preview_identity(1)
+    assert backend.preview_identity(1) is first
+    assert type(first) is object
+    screen.close_window(screen.windows[0])
+    gc.collect()
+    assert old_window() is None
+    with pytest.raises(BackendError):
+        backend.preview_identity(1)
+    screen.windows.append(NativeWindow(screen, 1, screen.spaces[0]))
+    assert backend.preview_identity(1) is not first
+    backend.close()
+    assert not screen.handlers
+    assert not backend._preview_identities
