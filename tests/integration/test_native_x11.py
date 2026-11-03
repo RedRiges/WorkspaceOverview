@@ -98,6 +98,16 @@ def session():
 
         connection = display.Display()
         try:
+            root = connection.screen().root
+            for name in (
+                "_NET_CLIENT_LIST",
+                "_NET_CLIENT_LIST_STACKING",
+                "_NET_ACTIVE_WINDOW",
+                "_NET_NUMBER_OF_DESKTOPS",
+            ):
+                prop = root.get_full_property(connection.intern_atom(name), 0)
+                print(name, None if prop is None else list(prop.value))
+            print("Fixture XID:", window.get_window().get_xid())
             print(
                 "Root children:",
                 [
