@@ -1,5 +1,6 @@
 """Bounded RGB thumbnails in process memory; no files or window mutations."""
 
+import time
 from collections import OrderedDict
 from types import MappingProxyType
 
@@ -56,14 +57,19 @@ class RamPreviewCache:
 
 
 class PreviewSampler:
-    """Capture at most one eligible window per tick, preserving hidden images."""
+    """Schedule one capture in a separate process, with bounded per-window backoff."""
 
-    def __init__(self, backend, cache, permitted, *, after_capture=lambda: None):
+    def __init__(self, backend, cache, permitted, *, worker, clock=time.monotonic):
         self.backend = backend
         self.cache = cache
         self.permitted = permitted
-        self.after_capture = after_capture
-        self._cursor = 0
+        self.worker = worker
+        self.clock = clock
+        self._pending = None
+        self._schedule = {}
+        self.capture_ms = 0.0
+        self.capture_max_ms = 0.0
+        self.captures = 0
 
     def reconcile(self, snapshot):
         identities = {}
@@ -71,14 +77,59 @@ class PreviewSampler:
             try:
                 identities[window.id] = self.backend.preview_identity(window.id)
             except BackendError:
-                pass  # Closing/mapping races are discarded, never reused.
+                pass
         self.cache.reconcile(identities)
+        for window_id, (identity, _, _) in tuple(self._schedule.items()):
+            if identities.get(window_id) != identity:
+                del self._schedule[window_id]
         return identities
+
+    def cancel(self):
+        self.worker.cancel()
+        self._pending = None
+        self._schedule.clear()
+
+    def close(self):
+        self.cancel()
+        self.worker.close()
+
+    def _collect(self, identities, only_missing):
+        if self._pending is None:
+            return
+        result = self.worker.poll()
+        if result is None:
+            return
+        window_id, identity, epoch = self._pending
+        self._pending = None
+        image, duration = result
+        self.capture_ms = duration
+        self.capture_max_ms = max(self.capture_max_ms, duration)
+        self.captures += 1
+        if (
+            not self.permitted()
+            or self.cache.epoch != epoch
+            or identities.get(window_id) != identity
+        ):
+            return
+        previous = self.cache.images.get(window_id)
+        interval = self._schedule.get(window_id, (None, 0, 1.5))[2]
+        if image is None or image == previous:
+            interval = min(12.0, interval * 2)
+        else:
+            interval = 1.5
+        self._schedule[window_id] = (identity, self.clock() + interval, interval)
+        if image is not None and (not only_missing or previous is None):
+            self.cache.put(window_id, identity, image)
 
     def sample(self, snapshot, *, only_missing=False):
         identities = self.reconcile(snapshot)
         if not self.permitted():
+            self.cancel()
             return
+        self._collect(identities, only_missing)
+        if self._pending is not None:
+            return
+        now = self.clock()
         candidates = [
             w.id
             for w in snapshot.windows
@@ -86,21 +137,13 @@ class PreviewSampler:
             and not w.minimized
             and w.id in identities
             and (not only_missing or w.id not in self.cache.images)
+            and self._schedule.get(w.id, (None, 0, 0))[1] <= now
         ]
         if not candidates:
             return
-        window_id = candidates[self._cursor % len(candidates)]
-        self._cursor += 1
-        epoch = self.cache.epoch
-        try:
-            image = self.backend.capture_preview(window_id)
-            self.after_capture()
-            if (
-                image is not None
-                and self.permitted()
-                and self.cache.epoch == epoch
-                and self.backend.preview_identity(window_id) == identities[window_id]
-            ):
-                self.cache.put(window_id, identities[window_id], image)
-        except BackendError:
-            pass  # Keep the last successful thumbnail when a capture is unavailable.
+        # Oldest due window first; unseen windows get a first image promptly.
+        window_id = min(
+            candidates, key=lambda wid: self._schedule.get(wid, (None, 0, 0))[1]
+        )
+        if self.worker.submit(window_id):
+            self._pending = (window_id, identities[window_id], self.cache.epoch)

@@ -9,9 +9,9 @@ from workspace_overview.cli import parse_args
 from workspace_overview.core.backend import BackendError
 from workspace_overview.core.navigation import Direction
 from workspace_overview.core.overview import Overview
-from workspace_overview.native import drain_events
 from workspace_overview.previews.cache import PreviewSampler, RamPreviewCache
 from workspace_overview.previews.session import SessionGuard
+from workspace_overview.previews.worker import CaptureWorker
 from workspace_overview.ui.layout import strip_dimensions
 
 CSS = b"""
@@ -119,13 +119,13 @@ def build_application(native, *, previews: bool = True):
         def _ensure_resident(self):
             if self.backend is not None:
                 return
-            self.backend = create_backend(native, self._timestamp, previews=True)
+            self.backend = create_backend(native, self._timestamp, previews=False)
             self.guard = SessionGuard(native, self._lock_changed)
             self.sampler = PreviewSampler(
                 self.backend,
                 self.cache,
                 self._capture_permitted,
-                after_capture=lambda: drain_events(native),
+                worker=CaptureWorker(),
             )
             self._closed_handler = self.backend.screen.connect(
                 "window-closed", self._window_closed
@@ -176,12 +176,20 @@ def build_application(native, *, previews: bool = True):
                     for name, duration in self._open_timings.items()
                 )
             result += (
-                f"\nBackground sampling (ms): last={self._sampling_ms:.1f}; "
+                f"\nBackground scheduling (ms): last={self._sampling_ms:.1f}; "
                 f"max={self._sampling_max_ms:.1f}"
             )
+            if self.sampler is not None:
+                result += (
+                    f"\nCapture worker (ms): last={self.sampler.capture_ms:.1f}; "
+                    f"max={self.sampler.capture_max_ms:.1f}; "
+                    f"completed={self.sampler.captures}"
+                )
             return result
 
         def _clear_previews(self):
+            if self.sampler is not None:
+                self.sampler.cancel()
             self.cache.clear()
             self._render_pending = True
             if self.overview is not None and not self._busy:
@@ -200,6 +208,9 @@ def build_application(native, *, previews: bool = True):
         def _sample_background(self):
             if self._busy or self.backend is None:
                 return True
+            if not self._capture_permitted():
+                self.sampler.cancel()
+                return True
             self._busy = True
             started = time.perf_counter()
             try:
@@ -207,7 +218,7 @@ def build_application(native, *, previews: bool = True):
                 self.sampler.sample(snapshot, only_missing=self.overview is not None)
                 self._capture_error = False
             except BackendError:
-                self.cache.clear()
+                self._clear_previews()
                 self._capture_error = True
             finally:
                 self._sampling_ms = (time.perf_counter() - started) * 1000
@@ -782,7 +793,9 @@ def build_application(native, *, previews: bool = True):
                     self._closed_handler = 0
                 self.backend.close()
                 self.backend = None
-            self.sampler = None
+            if self.sampler is not None:
+                self.sampler.close()
+                self.sampler = None
             self.cache.clear()
             if self._held:
                 self.release()

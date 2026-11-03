@@ -170,7 +170,9 @@ activation is sent, a timeout is reported without automatically toggling again.
 For opening-delay diagnostics, open the overview a few times and run
 `./scripts/run-x11 --status` in another terminal. It reports the last opening's
 setup, window discovery, widget construction and show-request times, plus the
-time to the first completed GTK paint and the last/maximum sampling duration. These are
+time to the first completed GTK paint. `Background scheduling` measures work in
+the UI process; `Capture worker` measures image reading and resizing separately,
+and counts completed capture attempts. These are
 in-process measurements: they exclude shortcut dispatch and launcher startup,
 and a GTK paint is not a measurement of the compositor presenting a frame. The
 measurements contain no window titles or images and are not written to files.
@@ -203,8 +205,21 @@ Commands can be issued from another terminal:
 
 The cache holds at most **16 MiB of RGB thumbnail pixels**, with individual images
 at most 320×200. This limit does not include GTK widgets or transient X11 image
-buffers. At most one window is sampled every 750 ms, from the currently active
-workspace and only if mapped and not minimized. Capture never activates,
+buffers or the separate capture process. A scheduler checks every 750 ms and
+allows only **one capture in flight**, from the currently active workspace and
+only if mapped and not minimized. The worker owns its X11 connection and runs at
+lower CPU priority; reading and resizing images never run in the GTK thread.
+A local socket transfers at most 192,000 pixel bytes per result, with bounded
+nonblocking reads in the UI; no temporary image files are used.
+
+After a changed image, the next capture of that window is eligible after 1.5 s.
+Repeated identical or unavailable images back off to 3, 6, then 12 s between
+attempts (plus scheduling time). This reduces idle CPU/X11 traffic; a window that
+changes after sitting still can therefore have an older preview for roughly
+12 s or longer if many windows await capture. This is periodic comparison, not
+XDamage event tracking. Unseen windows are scheduled before windows being
+refreshed. The extra Python worker uses additional RAM in exchange for keeping
+capture CPU work and X11 waits away from the interface. Capture never activates,
 unminimizes, moves or redirects windows and never switches workspaces. When the
 overview is visible, existing thumbnails remain static; only missing images are
 filled. Old entries are evicted when space is needed, and closed windows and
@@ -219,7 +234,10 @@ Capture requires a compositor and a known inactive screen saver. The resident
 observes existing `org.xfce.ScreenSaver`, `org.freedesktop.ScreenSaver` and
 `org.gnome.ScreenSaver` D-Bus services. Activation clears the cache, closes the
 overview and pauses capture. Loss of the service or an unknown state also clears
-the cache and pauses capture. It neither starts nor configures a locker. If no
+the cache and pauses capture. Clearing, disabling, or pausing capture terminates
+the worker and discards pending results; restarting waits for the old process to
+exit. A capture that stalls for five seconds is terminated and retried with
+backoff. It neither starts nor configures a locker. If no
 supported service is available, `--status` reports `screen-lock state: unknown`
 and the overview uses icons; unsupported lockers do not provide a reliable signal
 for this implementation. D-Bus command output requires GLib 2.80 or newer.

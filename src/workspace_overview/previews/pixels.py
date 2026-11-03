@@ -36,10 +36,25 @@ def decode_rgb(
     scale = min(1.0, max_width / width, max_height / height)
     out_width, out_height = max(1, int(width * scale)), max(1, int(height * scale))
     output = bytearray(out_width * out_height * 3)
+    offsets = [(x * width // out_width) * pixel_bytes for x in range(out_width)]
+    # Common X11 RGB888 formats need no integer unpacking or channel scaling.
+    if all(maximum == 255 and shift % 8 == 0 for _, shift, maximum in channels):
+        byte_offsets = [
+            shift // 8 if byteorder == "little" else pixel_bytes - 1 - shift // 8
+            for _, shift, _ in channels
+        ]
+        for y in range(out_height):
+            row = (y * height // out_height) * stride
+            target = y * out_width * 3
+            for channel, byte_offset in enumerate(byte_offsets):
+                output[target + channel : target + out_width * 3 : 3] = bytes(
+                    data[row + offset + byte_offset] for offset in offsets
+                )
+        return Preview(out_width, out_height, bytes(output))
     for y in range(out_height):
         row = (y * height // out_height) * stride
-        for x in range(out_width):
-            offset = row + (x * width // out_width) * pixel_bytes
+        for x, source_offset in enumerate(offsets):
+            offset = row + source_offset
             pixel = int.from_bytes(data[offset : offset + pixel_bytes], byteorder)
             target = (y * out_width + x) * 3
             for channel, (mask, shift, maximum) in enumerate(channels):

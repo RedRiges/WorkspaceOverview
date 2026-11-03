@@ -49,67 +49,158 @@ def test_closed_or_reused_xids_never_retain_old_images():
     assert not cache.images
 
 
-def test_capture_only_active_non_minimized_windows_and_keep_hidden_images():
+class DeferredCapture:
+    def __init__(self, backend):
+        self.backend = backend
+        self.requests = []
+        self.pending = None
+        self.result = None
+
+    def submit(self, window_id):
+        assert self.pending is None
+        self.pending = window_id
+        self.requests.append(window_id)
+        return True
+
+    def finish(self, image_override=None):
+        image = image_override or self.backend.capture_preview(self.pending)
+        self.result = (image, 85.0)
+
+    def poll(self):
+        result = self.result
+        if result is not None:
+            self.pending = self.result = None
+        return result
+
+    def cancel(self):
+        self.pending = self.result = None
+
+    close = cancel
+
+
+def make_sampler():
     backend = CaptureBackend()
     cache = RamPreviewCache()
-    sampler = PreviewSampler(backend, cache, lambda: True)
+    worker = DeferredCapture(backend)
+    now = [0.0]
+    allowed = [True]
+    sampler = PreviewSampler(
+        backend, cache, lambda: allowed[0], worker=worker, clock=lambda: now[0]
+    )
+    return backend, cache, worker, sampler, now, allowed
+
+
+def test_capture_only_active_non_minimized_windows_and_keep_hidden_images():
+    backend, cache, worker, sampler, _, _ = make_sampler()
     sampler.sample(backend.snapshot())
+    for _ in range(20):
+        sampler.sample(backend.snapshot())
+    assert worker.requests == [101]  # Busy worker never accumulates a queue.
+    assert not cache.images
+    worker.finish()
     sampler.sample(backend.snapshot())
-    assert backend.capture_requests == [101, 102]
+    assert worker.requests == [101, 102]
     first = cache.images[101]
+    worker.finish()
     backend.set_snapshot(
         replace(backend.snapshot(), active_workspace_id=20, active_window_id=201)
     )
     sampler.sample(backend.snapshot())
-    assert backend.capture_requests[-1] == 201
+    assert worker.requests[-1] == 201
     assert cache.images[101] is first
     assert not backend.actions
     backend.remove_window(101)
     sampler.reconcile(backend.snapshot())
     assert 101 not in cache.images
+    assert 101 not in sampler._schedule
 
 
 def test_pause_and_clear_during_capture_cannot_repopulate_cache():
-    backend = CaptureBackend()
-    cache = RamPreviewCache()
-    allowed = [False]
-    sampler = PreviewSampler(backend, cache, lambda: allowed[0])
+    backend, cache, worker, sampler, _, allowed = make_sampler()
+    allowed[0] = False
     sampler.sample(backend.snapshot())
-    assert not backend.capture_requests
+    assert not worker.requests
     allowed[0] = True
-    sampler.after_capture = cache.clear
     sampler.sample(backend.snapshot())
-    assert backend.capture_requests and not cache.images
-    sampler.after_capture = lambda: allowed.__setitem__(0, False)
+    worker.finish()
+    cache.clear()  # Even without cancelling, an old epoch is discarded.
     sampler.sample(backend.snapshot())
     assert not cache.images
+    worker.finish()
+    allowed[0] = False
+    sampler.sample(backend.snapshot())
+    assert not cache.images and worker.pending is None
+    assert sampler._pending is None
 
 
-def test_xid_reused_during_capture_is_discarded():
-    backend = CaptureBackend()
-    cache = RamPreviewCache()
-    sampler = PreviewSampler(backend, cache, lambda: True)
-    sampler.after_capture = lambda: backend.identities.__setitem__(101, object())
+def test_closed_or_reused_xid_during_capture_is_discarded():
+    backend, cache, worker, sampler, _, _ = make_sampler()
+    sampler.sample(backend.snapshot())
+    worker.finish()
+    backend.identities[101] = object()
+    sampler.sample(backend.snapshot())
+    assert not cache.images
+    worker.finish()
+    backend.remove_window(101)
     sampler.sample(backend.snapshot())
     assert not cache.images
 
 
 def test_external_cache_survives_overlay_close_without_duplicate_captures():
-    backend = CaptureBackend()
-    cache = RamPreviewCache()
-    sampler = PreviewSampler(backend, cache, lambda: True)
+    backend, cache, worker, sampler, _, _ = make_sampler()
     sampler.sample(backend.snapshot())
+    worker.finish()
+    sampler.sample(backend.snapshot(), only_missing=True)
     overview = Overview(backend, previews=cache.images)
     overview.open()
     assert overview.previews[101] is cache.images[101]
+    worker.finish()
     sampler.sample(backend.snapshot(), only_missing=True)
-    assert backend.capture_requests == [101, 102]
-    sampler.sample(backend.snapshot(), only_missing=True)
-    assert backend.capture_requests == [101, 102]
+    assert worker.requests == [101, 102]
     overview.close()
     assert len(cache.images) == 2
     cache.clear()
     assert not overview.previews
+
+
+def test_static_images_back_off_and_changes_restore_short_interval():
+    backend, cache, worker, sampler, now, _ = make_sampler()
+    backend.remove_window(102)
+    sampler.sample(backend.snapshot())
+    for interval in (1.5, 3, 6, 12, 12):
+        worker.finish(image())
+        sampler.sample(backend.snapshot())
+        assert sampler._schedule[101][2] == interval
+        count = len(worker.requests)
+        now[0] += interval - 0.01
+        sampler.sample(backend.snapshot())
+        assert len(worker.requests) == count
+        now[0] += 0.02
+        sampler.sample(backend.snapshot())
+        assert len(worker.requests) == count + 1
+    worker.finish(image(99))
+    sampler.sample(backend.snapshot())
+    assert cache.images[101] == image(99)
+    assert sampler._schedule[101][2] == 1.5
+    assert sampler.capture_ms == 85.0
+
+
+def test_failed_capture_backs_off_without_losing_last_image():
+    backend, cache, worker, sampler, now, _ = make_sampler()
+    backend.remove_window(102)
+    sampler.sample(backend.snapshot())
+    worker.finish(image())
+    sampler.sample(backend.snapshot())
+    now[0] = 2
+    sampler.sample(backend.snapshot())
+    worker.result = (None, 0.0)
+    sampler.sample(backend.snapshot())
+    assert cache.images[101] == image()
+    assert sampler._schedule[101][2] == 3.0
+    sampler.cancel()
+    assert not sampler._schedule
+    sampler.sample(backend.snapshot())
+    assert worker.pending == 101
 
 
 def test_cache_size_remains_bounded_with_many_windows():
